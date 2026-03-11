@@ -1,0 +1,154 @@
+{
+  "seed": 7,
+  "episode_duration": 12.0,
+  "physics_dt": 0.0166666667,
+  "render_dt": 0.1,
+  "output_dir": "outputs/dense_mrf_process_line",
+  "system": {
+    "sources": [
+      {"id": "homes", "source_type": "home", "share": 0.78},
+      {"id": "businesses", "source_type": "business", "share": 0.22}
+    ],
+    "facilities": [
+      {"id": "edco_mrf", "facility_type": "mrf", "description": "Dense multi-level single-stream recycling MRF"},
+      {"id": "edco_compost", "facility_type": "compost", "description": "Organics composting"},
+      {"id": "edco_transfer", "facility_type": "transfer_recovery", "description": "Trash transfer and recovery"},
+      {"id": "landfill", "facility_type": "disposal", "description": "Residual disposal"},
+      {"id": "edco_cdi", "facility_type": "cdi_processing", "description": "Construction and demolition processing"},
+      {"id": "paper_mill", "facility_type": "end_market", "description": "Paper end market"},
+      {"id": "plastic_reclaimer", "facility_type": "end_market", "description": "Plastic end market"},
+      {"id": "metal_processor", "facility_type": "end_market", "description": "Metal end market"},
+      {"id": "glass_processor", "facility_type": "end_market", "description": "Glass end market"}
+    ],
+    "stream_routes": {
+      "recycling": {
+        "initial_facility_id": "edco_mrf",
+        "residual_facility_id": "landfill",
+        "end_market_facility_id": "paper_mill"
+      },
+      "organics": {"initial_facility_id": "edco_compost"},
+      "trash": {
+        "initial_facility_id": "edco_transfer",
+        "residual_facility_id": "landfill",
+        "recovered_facility_id": "metal_processor",
+        "recover_material_classes": ["ferrous_metal", "nonferrous_metal"]
+      },
+      "construction_demolition": {"initial_facility_id": "edco_cdi"}
+    },
+    "commodity_end_markets": {
+      "occ": "paper_mill",
+      "mixed_paper": "paper_mill",
+      "pet": "plastic_reclaimer",
+      "hdpe": "plastic_reclaimer",
+      "gable_top_carton": "paper_mill",
+      "aseptic_carton": "paper_mill",
+      "ferrous": "metal_processor",
+      "nonferrous": "metal_processor",
+      "glass": "glass_processor"
+    },
+    "item_mix": {
+      "cardboard": 0.18,
+      "mixed_paper": 0.13,
+      "pet_bottle": 0.17,
+      "hdpe_jug": 0.08,
+      "aluminum_can": 0.12,
+      "steel_can": 0.09,
+      "glass_bottle": 0.1,
+      "milk_carton": 0.07,
+      "residue": 0.06
+    },
+    "item_catalog": {
+      "cardboard": {"stream": "recycling", "material_class": "paper", "shape": "box", "size": [0.34, 0.26, 0.04], "mass": 0.09, "color": [0.82, 0.56, 0.26], "screenable_2d": true, "magnetic": false, "container_like": false, "visual_profile": "carton", "commodity_target": "occ"},
+      "mixed_paper": {"stream": "recycling", "material_class": "paper", "shape": "box", "size": [0.24, 0.18, 0.03], "mass": 0.05, "color": [0.88, 0.85, 0.78], "screenable_2d": true, "magnetic": false, "container_like": false, "visual_profile": "paper_stack", "commodity_target": "mixed_paper"},
+      "pet_bottle": {"stream": "recycling", "material_class": "plastic", "shape": "cylinder", "size": [0.08, 0.08, 0.24], "mass": 0.03, "color": [0.2, 0.68, 0.95], "screenable_2d": false, "magnetic": false, "container_like": true, "visual_profile": "bottle", "commodity_target": "pet"},
+      "hdpe_jug": {"stream": "recycling", "material_class": "plastic", "shape": "cylinder", "size": [0.14, 0.12, 0.28], "mass": 0.06, "color": [0.92, 0.92, 0.88], "screenable_2d": false, "magnetic": false, "container_like": true, "visual_profile": "jug", "commodity_target": "hdpe"},
+      "aluminum_can": {"stream": "recycling", "material_class": "nonferrous_metal", "shape": "cylinder", "size": [0.07, 0.07, 0.13], "mass": 0.015, "color": [0.96, 0.9, 0.2], "screenable_2d": false, "magnetic": false, "container_like": true, "visual_profile": "can", "commodity_target": "nonferrous"},
+      "steel_can": {"stream": "recycling", "material_class": "ferrous_metal", "shape": "cylinder", "size": [0.07, 0.07, 0.12], "mass": 0.02, "color": [0.58, 0.62, 0.66], "screenable_2d": false, "magnetic": true, "container_like": true, "visual_profile": "can", "commodity_target": "ferrous"},
+      "glass_bottle": {"stream": "recycling", "material_class": "glass", "shape": "cylinder", "size": [0.08, 0.08, 0.26], "mass": 0.18, "color": [0.06, 0.78, 0.32], "screenable_2d": false, "magnetic": false, "container_like": true, "visual_profile": "bottle", "commodity_target": "glass"},
+      "milk_carton": {"stream": "recycling", "material_class": "paper", "shape": "box", "size": [0.1, 0.08, 0.22], "mass": 0.04, "color": [0.86, 0.22, 0.78], "screenable_2d": false, "magnetic": false, "container_like": true, "visual_profile": "carton", "commodity_target": "gable_top_carton"},
+      "residue": {"stream": "recycling", "material_class": "residue", "shape": "box", "size": [0.18, 0.14, 0.12], "mass": 0.06, "color": [0.34, 0.3, 0.26], "screenable_2d": false, "magnetic": false, "container_like": false, "visual_profile": "bag"}
+    }
+  },
+  "mrf": {
+    "main_belt": {"length": 52.0, "width": 1.8, "height": 0.3, "speed": 0.85},
+    "spawn": {"rate": 2.4, "drop_height": 0.4, "lane_jitter": 0.28, "yaw_jitter_deg": 16.0},
+    "camera": {"position": [-18.0, -24.0, 15.0], "look_at": [10.0, 0.0, 5.5], "resolution": [1280, 720]},
+    "environment": {
+      "mode": "procedural",
+      "environment_id": "simple_warehouse",
+      "layout_preset": "dense_mrf_process_line",
+      "conveyor_transform": {"position": [0.0, 0.0, 0.0], "yaw_deg": 0.0},
+      "bin_offset": [0.0, 1.7, 0.0],
+      "station_marker_height": 1.0,
+      "dome_light_intensity": 420.0
+    },
+    "stations": [
+      {"name": "presort", "station_type": "presort", "x_range": [-20.0, -12.0], "target_materials": ["residue"], "capture_area": {"offset": [0.0, -1.45, 0.35], "size": [1.3, 0.75, 0.3]}},
+      {"name": "primary_screen", "station_type": "screen", "x_range": [-8.0, -2.0], "target_materials": ["paper"], "capture_area": {"offset": [0.0, -1.45, 0.35], "size": [1.4, 0.82, 0.3]}},
+      {"name": "optical_sorter", "station_type": "optical_sorter", "x_range": [4.0, 12.0], "target_materials": ["plastic", "paper"], "target_commodities": ["pet", "hdpe", "gable_top_carton", "aseptic_carton"], "capture_area": {"offset": [0.0, 1.45, 0.35], "size": [1.3, 0.78, 0.3]}},
+      {"name": "manual_qc", "station_type": "manual_qc", "x_range": [12.0, 20.0], "target_materials": ["nonferrous_metal", "glass", "residue"], "target_commodities": ["nonferrous", "glass"], "capture_area": {"offset": [0.0, 1.45, 0.35], "size": [1.2, 0.78, 0.3]}}
+    ],
+    "spawn_segment_id": "s1_infeed_incline",
+    "subareas": [
+      "A. Infeed + tipping floor zone",
+      "B. Elevated presort/manual sort zone with catwalk",
+      "C. Central machine-dense processing zone",
+      "D. Downstream split lines / optical sort area",
+      "E. Bale storage or output zone"
+    ],
+    "conveyor_segments": [
+      {"id": "s1_infeed_incline", "start_pose": {"position": [-18.0, 6.0, 0.55], "yaw_deg": -20.0}, "end_pose": {"position": [-10.0, 2.5, 5.0], "yaw_deg": -20.0}, "width": 1.65, "belt_height": 0.3, "thickness": 0.22, "belt_speed": 0.9, "support_spacing": 2.4, "sidewalls": true, "skirting": true, "access_side": "right", "has_catwalk": false, "role": "primary_infeed"},
+      {"id": "s2_presort_elevated", "start_pose": {"position": [-10.0, 2.5, 5.0], "yaw_deg": 0.0}, "end_pose": {"position": [0.0, 2.5, 5.2], "yaw_deg": 0.0}, "width": 1.55, "belt_height": 0.28, "thickness": 0.2, "belt_speed": 0.85, "support_spacing": 2.2, "sidewalls": true, "skirting": true, "access_side": "right", "has_catwalk": true, "accumulation_zone": {"enabled": true, "length": 3.0}, "role": "presort"},
+      {"id": "s3_screen_feed", "start_pose": {"position": [0.0, 2.5, 5.2], "yaw_deg": -8.0}, "end_pose": {"position": [8.0, 1.2, 4.6], "yaw_deg": -8.0}, "width": 1.5, "belt_height": 0.26, "thickness": 0.2, "belt_speed": 0.82, "support_spacing": 2.0, "sidewalls": true, "skirting": true, "access_side": "left", "has_catwalk": false, "role": "screen_feed"},
+      {"id": "s4_fiber_branch", "start_pose": {"position": [8.0, 1.2, 4.6], "yaw_deg": -28.0}, "end_pose": {"position": [15.0, -4.2, 3.2], "yaw_deg": -28.0}, "width": 1.35, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.8, "support_spacing": 2.0, "sidewalls": true, "skirting": false, "access_side": "left", "has_catwalk": false, "role": "fiber_branch"},
+      {"id": "s5_container_lift", "start_pose": {"position": [8.0, 1.2, 4.6], "yaw_deg": 28.0}, "end_pose": {"position": [15.0, 5.8, 6.9], "yaw_deg": 28.0}, "width": 1.35, "belt_height": 0.24, "thickness": 0.18, "belt_speed": 0.84, "support_spacing": 2.1, "sidewalls": true, "skirting": true, "access_side": "right", "has_catwalk": false, "role": "container_lift"},
+      {"id": "s6_optical_line", "start_pose": {"position": [15.0, 5.8, 6.9], "yaw_deg": 0.0}, "end_pose": {"position": [25.0, 5.8, 6.8], "yaw_deg": 0.0}, "width": 1.4, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.88, "support_spacing": 2.0, "sidewalls": false, "skirting": true, "access_side": "right", "has_catwalk": true, "role": "optical_sort"},
+      {"id": "s7_pet_return", "start_pose": {"position": [25.0, 5.8, 6.8], "yaw_deg": -36.0}, "end_pose": {"position": [31.0, 2.0, 4.2], "yaw_deg": -36.0}, "width": 1.2, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.82, "support_spacing": 1.8, "sidewalls": true, "skirting": false, "access_side": "left", "has_catwalk": false, "role": "pet_return"},
+      {"id": "s8_magnet_decline", "start_pose": {"position": [25.0, 5.8, 6.8], "yaw_deg": -18.0}, "end_pose": {"position": [31.0, 3.5, 5.0], "yaw_deg": -18.0}, "width": 1.2, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.82, "support_spacing": 1.8, "sidewalls": true, "skirting": false, "access_side": "right", "has_catwalk": false, "role": "magnet_feed"},
+      {"id": "s9_nonferrous_return", "start_pose": {"position": [31.0, 3.5, 5.0], "yaw_deg": -34.0}, "end_pose": {"position": [36.0, 1.0, 3.2], "yaw_deg": -34.0}, "width": 1.15, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.8, "support_spacing": 1.8, "sidewalls": true, "skirting": false, "access_side": "right", "has_catwalk": false, "role": "nonferrous_return"},
+      {"id": "s10_baler_feed", "start_pose": {"position": [36.0, 1.0, 3.2], "yaw_deg": -12.0}, "end_pose": {"position": [43.0, -0.5, 2.4], "yaw_deg": -12.0}, "width": 1.3, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.78, "support_spacing": 1.9, "sidewalls": true, "skirting": true, "access_side": "left", "has_catwalk": false, "role": "baler_feed"},
+      {"id": "s11_residue_decline", "start_pose": {"position": [8.0, 1.2, 4.6], "yaw_deg": 40.0}, "end_pose": {"position": [15.0, 8.0, 1.8], "yaw_deg": 40.0}, "width": 1.25, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.78, "support_spacing": 2.0, "sidewalls": true, "skirting": false, "access_side": "right", "has_catwalk": false, "role": "residue_discharge"},
+      {"id": "s12_ferrous_discharge", "start_pose": {"position": [31.0, 3.5, 5.0], "yaw_deg": 34.0}, "end_pose": {"position": [35.5, 6.8, 2.8], "yaw_deg": 34.0}, "width": 1.15, "belt_height": 0.22, "thickness": 0.18, "belt_speed": 0.78, "support_spacing": 1.8, "sidewalls": true, "skirting": false, "access_side": "left", "has_catwalk": false, "role": "ferrous_drop"}
+    ],
+    "routing_nodes": [
+      {"id": "n1_infeed_to_presort", "node_type": "handoff", "pose": {"position": [-10.0, 2.5, 5.0], "yaw_deg": 0.0}, "upstream_segment_ids": ["s1_infeed_incline"], "downstream_segment_ids": ["s2_presort_elevated"]},
+      {"id": "n2_presort_to_screen", "node_type": "handoff", "pose": {"position": [0.0, 2.5, 5.2], "yaw_deg": 0.0}, "upstream_segment_ids": ["s2_presort_elevated"], "downstream_segment_ids": ["s3_screen_feed"]},
+      {"id": "n3_screen_split", "node_type": "split", "pose": {"position": [8.0, 1.2, 4.6], "yaw_deg": 0.0}, "upstream_segment_ids": ["s3_screen_feed"], "downstream_segment_ids": ["s4_fiber_branch", "s5_container_lift", "s11_residue_decline"]},
+      {"id": "n4_container_to_optical", "node_type": "handoff", "pose": {"position": [15.0, 5.8, 6.9], "yaw_deg": 0.0}, "upstream_segment_ids": ["s5_container_lift"], "downstream_segment_ids": ["s6_optical_line"]},
+      {"id": "n5_optical_split", "node_type": "split", "pose": {"position": [25.0, 5.8, 6.8], "yaw_deg": 0.0}, "upstream_segment_ids": ["s6_optical_line"], "downstream_segment_ids": ["s7_pet_return", "s8_magnet_decline"]},
+      {"id": "n6_metal_split", "node_type": "split", "pose": {"position": [31.0, 3.5, 5.0], "yaw_deg": 0.0}, "upstream_segment_ids": ["s8_magnet_decline"], "downstream_segment_ids": ["s9_nonferrous_return", "s12_ferrous_discharge"]},
+      {"id": "n7_baler_merge", "node_type": "merge", "pose": {"position": [36.0, 1.0, 3.2], "yaw_deg": 0.0}, "upstream_segment_ids": ["s7_pet_return", "s9_nonferrous_return"], "downstream_segment_ids": ["s10_baler_feed"]},
+      {"id": "n8_fiber_drop", "node_type": "drop", "pose": {"position": [15.0, -4.2, 3.2], "yaw_deg": 0.0}, "upstream_segment_ids": ["s4_fiber_branch"], "downstream_segment_ids": [], "drop_zone_id": "dz_fiber_bunker"},
+      {"id": "n9_baler_outbound", "node_type": "drop", "pose": {"position": [43.0, -0.5, 2.4], "yaw_deg": 0.0}, "upstream_segment_ids": ["s10_baler_feed"], "downstream_segment_ids": [], "drop_zone_id": "dz_bale_outbound"},
+      {"id": "n10_residue_drop", "node_type": "drop", "pose": {"position": [15.0, 8.0, 1.8], "yaw_deg": 0.0}, "upstream_segment_ids": ["s11_residue_decline"], "downstream_segment_ids": [], "drop_zone_id": "dz_residue_trailer"},
+      {"id": "n11_ferrous_drop", "node_type": "drop", "pose": {"position": [35.5, 6.8, 2.8], "yaw_deg": 0.0}, "upstream_segment_ids": ["s12_ferrous_discharge"], "downstream_segment_ids": [], "drop_zone_id": "dz_ferrous_bunker"}
+    ],
+    "machine_zones": [
+      {"id": "m1_hopper", "machine_type": "hopper", "pose": {"position": [-20.0, 6.0, 1.2], "yaw_deg": -10.0}, "size": [4.5, 5.0, 2.4], "input_segment_ids": ["s1_infeed_incline"], "output_segment_ids": ["s1_infeed_incline"], "role": "tipping_floor_hopper"},
+      {"id": "m2_screen", "machine_type": "screen", "pose": {"position": [6.0, 0.3, 4.8], "yaw_deg": -10.0}, "size": [6.0, 4.0, 4.2], "input_segment_ids": ["s3_screen_feed"], "output_segment_ids": ["s4_fiber_branch", "s5_container_lift", "s11_residue_decline"], "role": "primary_screening"},
+      {"id": "m3_optical", "machine_type": "optical_sorter", "pose": {"position": [22.0, 5.8, 7.2], "yaw_deg": 0.0}, "size": [5.5, 3.2, 3.0], "input_segment_ids": ["s6_optical_line"], "output_segment_ids": ["s7_pet_return", "s8_magnet_decline"], "role": "container_optical_sort"},
+      {"id": "m4_magnet", "machine_type": "magnet", "pose": {"position": [31.0, 3.5, 5.4], "yaw_deg": 0.0}, "size": [4.2, 2.6, 2.8], "input_segment_ids": ["s8_magnet_decline"], "output_segment_ids": ["s9_nonferrous_return", "s12_ferrous_discharge"], "role": "ferrous_recovery"},
+      {"id": "m5_eddy", "machine_type": "eddy_current", "pose": {"position": [34.0, 1.8, 3.8], "yaw_deg": -28.0}, "size": [4.2, 2.8, 2.5], "input_segment_ids": ["s9_nonferrous_return"], "output_segment_ids": ["s10_baler_feed"], "role": "nonferrous_recovery"},
+      {"id": "m6_baler", "machine_type": "baler", "pose": {"position": [44.5, -1.4, 2.0], "yaw_deg": 0.0}, "size": [5.4, 3.8, 3.4], "input_segment_ids": ["s10_baler_feed"], "output_segment_ids": ["s10_baler_feed"], "role": "outbound_baling"}
+    ],
+    "platforms": [
+      {"id": "p1_presort_mezzanine", "pose": {"position": [-4.8, 0.2, 4.8], "yaw_deg": 0.0}, "size": [11.5, 2.8, 0.24], "elevation": 4.8, "guard_rails": true, "stairs": true, "ladders": false, "adjacent_segment_ids": ["s2_presort_elevated"]},
+      {"id": "p2_optical_service", "pose": {"position": [22.0, 7.8, 6.4], "yaw_deg": 0.0}, "size": [8.0, 2.2, 0.22], "elevation": 6.4, "guard_rails": true, "stairs": true, "ladders": true, "adjacent_segment_ids": ["s6_optical_line", "s8_magnet_decline"]}
+    ],
+    "drop_zones": [
+      {"id": "dz_fiber_bunker", "zone_type": "bunker", "pose": {"position": [17.5, -7.0, 1.0], "yaw_deg": 0.0}, "size": [4.0, 3.2, 2.0]},
+      {"id": "dz_pet_bunker", "zone_type": "bunker", "pose": {"position": [31.5, 2.4, 1.3], "yaw_deg": 0.0}, "size": [3.4, 2.6, 2.2]},
+      {"id": "dz_ferrous_bunker", "zone_type": "bunker", "pose": {"position": [38.0, 8.2, 1.1], "yaw_deg": 0.0}, "size": [3.0, 2.4, 2.0]},
+      {"id": "dz_residue_trailer", "zone_type": "trailer", "pose": {"position": [18.5, 11.0, 1.0], "yaw_deg": 0.0}, "size": [5.2, 2.8, 2.0]},
+      {"id": "dz_bale_outbound", "zone_type": "outbound", "pose": {"position": [47.0, -3.0, 0.9], "yaw_deg": 0.0}, "size": [5.4, 4.4, 1.8]}
+    ],
+    "material_routes": [
+      {"id": "paper_route", "material_classes": ["paper"], "commodity_targets": ["occ", "mixed_paper", "gable_top_carton", "aseptic_carton"], "segment_ids": ["s1_infeed_incline", "s2_presort_elevated", "s3_screen_feed", "s4_fiber_branch"], "node_ids": ["n1_infeed_to_presort", "n2_presort_to_screen", "n3_screen_split", "n8_fiber_drop"], "machine_ids": ["m1_hopper", "m2_screen"], "drop_zone_id": "dz_fiber_bunker", "outbound_zone_id": null, "final_status": "shipped_to_end_market", "station_name": "primary_screen"},
+      {"id": "plastic_route", "material_classes": ["plastic"], "commodity_targets": ["pet", "hdpe"], "segment_ids": ["s1_infeed_incline", "s2_presort_elevated", "s3_screen_feed", "s5_container_lift", "s6_optical_line", "s7_pet_return", "s10_baler_feed"], "node_ids": ["n1_infeed_to_presort", "n2_presort_to_screen", "n3_screen_split", "n4_container_to_optical", "n5_optical_split", "n7_baler_merge", "n9_baler_outbound"], "machine_ids": ["m1_hopper", "m2_screen", "m3_optical", "m6_baler"], "drop_zone_id": "dz_pet_bunker", "outbound_zone_id": "dz_bale_outbound", "final_status": "shipped_to_end_market", "station_name": "optical_sorter"},
+      {"id": "ferrous_route", "material_classes": ["ferrous_metal"], "commodity_targets": ["ferrous"], "segment_ids": ["s1_infeed_incline", "s2_presort_elevated", "s3_screen_feed", "s5_container_lift", "s6_optical_line", "s8_magnet_decline", "s12_ferrous_discharge"], "node_ids": ["n1_infeed_to_presort", "n2_presort_to_screen", "n3_screen_split", "n4_container_to_optical", "n5_optical_split", "n6_metal_split", "n11_ferrous_drop"], "machine_ids": ["m1_hopper", "m2_screen", "m3_optical", "m4_magnet"], "drop_zone_id": "dz_ferrous_bunker", "outbound_zone_id": null, "final_status": "shipped_to_end_market", "station_name": "manual_qc"},
+      {"id": "nonferrous_route", "material_classes": ["nonferrous_metal"], "commodity_targets": ["nonferrous"], "segment_ids": ["s1_infeed_incline", "s2_presort_elevated", "s3_screen_feed", "s5_container_lift", "s6_optical_line", "s8_magnet_decline", "s9_nonferrous_return", "s10_baler_feed"], "node_ids": ["n1_infeed_to_presort", "n2_presort_to_screen", "n3_screen_split", "n4_container_to_optical", "n5_optical_split", "n6_metal_split", "n7_baler_merge", "n9_baler_outbound"], "machine_ids": ["m1_hopper", "m2_screen", "m3_optical", "m4_magnet", "m5_eddy", "m6_baler"], "drop_zone_id": null, "outbound_zone_id": "dz_bale_outbound", "final_status": "shipped_to_end_market", "station_name": "manual_qc"},
+      {"id": "glass_route", "material_classes": ["glass"], "commodity_targets": ["glass"], "segment_ids": ["s1_infeed_incline", "s2_presort_elevated", "s3_screen_feed", "s11_residue_decline"], "node_ids": ["n1_infeed_to_presort", "n2_presort_to_screen", "n3_screen_split", "n10_residue_drop"], "machine_ids": ["m1_hopper", "m2_screen"], "drop_zone_id": "dz_residue_trailer", "outbound_zone_id": null, "final_status": "residual_disposed", "station_name": "manual_qc"},
+      {"id": "residue_route", "material_classes": ["residue"], "commodity_targets": [], "segment_ids": ["s1_infeed_incline", "s2_presort_elevated", "s3_screen_feed", "s11_residue_decline"], "node_ids": ["n1_infeed_to_presort", "n2_presort_to_screen", "n3_screen_split", "n10_residue_drop"], "machine_ids": ["m1_hopper", "m2_screen"], "drop_zone_id": "dz_residue_trailer", "outbound_zone_id": null, "final_status": "residual_disposed", "station_name": "presort"}
+    ]
+  }
+}

@@ -1,0 +1,239 @@
+{
+  "seed": 7,
+  "episode_duration": 10.0,
+  "physics_dt": 0.0166666667,
+  "render_dt": 0.1,
+  "output_dir": "outputs/edco_conveyor_segment_a",
+  "system": {
+    "sources": [
+      {
+        "id": "homes",
+        "source_type": "home",
+        "share": 0.8
+      },
+      {
+        "id": "businesses",
+        "source_type": "business",
+        "share": 0.2
+      }
+    ],
+    "facilities": [
+      {
+        "id": "edco_mrf",
+        "facility_type": "mrf",
+        "description": "Single-stream recycling MRF"
+      },
+      {
+        "id": "edco_compost",
+        "facility_type": "compost",
+        "description": "Organics composting"
+      },
+      {
+        "id": "edco_transfer",
+        "facility_type": "transfer_recovery",
+        "description": "Trash transfer and recovery"
+      },
+      {
+        "id": "landfill",
+        "facility_type": "disposal",
+        "description": "Residual disposal"
+      },
+      {
+        "id": "edco_cdi",
+        "facility_type": "cdi_processing",
+        "description": "Construction and demolition processing"
+      },
+      {
+        "id": "paper_mill",
+        "facility_type": "end_market",
+        "description": "Paper end market"
+      },
+      {
+        "id": "plastic_reclaimer",
+        "facility_type": "end_market",
+        "description": "Plastic end market"
+      },
+      {
+        "id": "metal_processor",
+        "facility_type": "end_market",
+        "description": "Metal end market"
+      }
+    ],
+    "stream_routes": {
+      "recycling": {
+        "initial_facility_id": "edco_mrf",
+        "residual_facility_id": "landfill",
+        "end_market_facility_id": "paper_mill"
+      },
+      "organics": {
+        "initial_facility_id": "edco_compost"
+      },
+      "trash": {
+        "initial_facility_id": "edco_transfer",
+        "residual_facility_id": "landfill",
+        "recovered_facility_id": "metal_processor",
+        "recover_material_classes": [
+          "ferrous_metal",
+          "nonferrous_metal"
+        ]
+      },
+      "construction_demolition": {
+        "initial_facility_id": "edco_cdi"
+      }
+    },
+    "commodity_end_markets": {
+      "occ": "paper_mill",
+      "pet": "plastic_reclaimer",
+      "nonferrous": "metal_processor"
+    },
+    "item_mix": {
+      "cardboard": 0.34,
+      "pet_bottle": 0.38,
+      "aluminum_can": 0.28
+    },
+    "item_catalog": {
+      "cardboard": {
+        "stream": "recycling",
+        "material_class": "paper",
+        "shape": "box",
+        "size": [0.34, 0.26, 0.04],
+        "mass": 0.09,
+        "color": [0.72, 0.58, 0.38],
+        "screenable_2d": true,
+        "magnetic": false,
+        "container_like": false,
+        "visual_profile": "carton",
+        "commodity_target": "occ"
+      },
+      "pet_bottle": {
+        "stream": "recycling",
+        "material_class": "plastic",
+        "shape": "cylinder",
+        "size": [0.08, 0.08, 0.24],
+        "mass": 0.03,
+        "color": [0.52, 0.8, 0.92],
+        "screenable_2d": false,
+        "magnetic": false,
+        "container_like": true,
+        "visual_profile": "bottle",
+        "commodity_target": "pet"
+      },
+      "aluminum_can": {
+        "stream": "recycling",
+        "material_class": "nonferrous_metal",
+        "shape": "cylinder",
+        "size": [0.07, 0.07, 0.13],
+        "mass": 0.015,
+        "color": [0.78, 0.8, 0.82],
+        "screenable_2d": false,
+        "magnetic": false,
+        "container_like": true,
+        "visual_profile": "can",
+        "commodity_target": "nonferrous"
+      },
+      "food_scraps": {
+        "stream": "organics",
+        "material_class": "organic",
+        "shape": "box",
+        "size": [0.16, 0.12, 0.08],
+        "mass": 0.09,
+        "color": [0.52, 0.42, 0.18],
+        "screenable_2d": false,
+        "magnetic": false,
+        "container_like": false,
+        "visual_profile": "chunk"
+      },
+      "trash_bag": {
+        "stream": "trash",
+        "material_class": "residue",
+        "shape": "box",
+        "size": [0.24, 0.2, 0.18],
+        "mass": 0.12,
+        "color": [0.18, 0.18, 0.18],
+        "screenable_2d": false,
+        "magnetic": false,
+        "container_like": false,
+        "visual_profile": "bag"
+      },
+      "broken_furniture": {
+        "stream": "construction_demolition",
+        "material_class": "mixed_c_and_d",
+        "shape": "box",
+        "size": [0.32, 0.22, 0.14],
+        "mass": 0.3,
+        "color": [0.56, 0.42, 0.28],
+        "screenable_2d": false,
+        "magnetic": false,
+        "container_like": false,
+        "visual_profile": "chunk"
+      }
+    }
+  },
+  "mrf": {
+    "main_belt": {
+      "length": 384.0,
+      "width": 2.2,
+      "height": 0.32,
+      "speed": 0.82
+    },
+    "spawn": {
+      "rate": 2.2,
+      "drop_height": 0.42,
+      "lane_jitter": 0.3,
+      "yaw_jitter_deg": 18.0
+    },
+    "camera": {
+      "position": [-138.0, -156.0, 120.0],
+      "look_at": [24.0, 4.0, 42.0],
+      "resolution": [1280, 720]
+    },
+    "environment": {
+      "mode": "procedural",
+      "environment_id": "simple_warehouse",
+      "layout_preset": "edco_conveyor_segment_a",
+      "conveyor_transform": {
+        "position": [0.0, 0.0, 0.0],
+        "yaw_deg": 0.0
+      },
+      "bin_offset": [0.0, 1.55, 0.0],
+      "station_marker_height": 0.92,
+      "dome_light_intensity": 420.0
+    },
+    "stations": [
+      {
+        "name": "feeder",
+        "station_type": "feeder",
+        "x_range": [-162.0, -138.0],
+        "target_materials": []
+      },
+      {
+        "name": "sensor_bank",
+        "station_type": "optical_sorter",
+        "x_range": [-90.0, -30.0],
+        "target_materials": ["plastic"],
+        "target_commodities": ["pet"],
+        "capture_area": {
+          "offset": [0.0, 1.45, 0.28],
+          "size": [1.3, 0.75, 0.24]
+        }
+      },
+      {
+        "name": "manual_qc",
+        "station_type": "manual_qc",
+        "x_range": [54.0, 114.0],
+        "target_materials": ["nonferrous_metal", "residue"],
+        "target_commodities": ["nonferrous"],
+        "capture_area": {
+          "offset": [0.0, -1.45, 0.28],
+          "size": [1.1, 0.7, 0.24]
+        }
+      },
+      {
+        "name": "residual_exit",
+        "station_type": "residual_exit",
+        "x_range": [132.0, 174.0],
+        "target_materials": []
+      }
+    ]
+  }
+}
