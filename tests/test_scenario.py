@@ -6,7 +6,7 @@ from pathlib import Path
 
 from recycling_mrf.config import SimulationConfig
 from recycling_mrf.isaac_runner import IsaacConveyorRunner
-from recycling_mrf.scenario import build_metadata_frame_times, generate_episode_plan
+from recycling_mrf.scenario import build_metadata_frame_times, generate_episode_plan, resolve_material_route
 
 
 class ScenarioTests(unittest.TestCase):
@@ -153,6 +153,90 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(plan.events)
         self.assertTrue(all(event.item_id.startswith("cycle_0001_") for event in plan.events))
         self.assertTrue(all(lifecycle.final_status == "residual_disposed" for lifecycle in plan.item_lifecycles))
+
+    def test_dense_topology_scene_exports_surface_path_metadata(self) -> None:
+        config = SimulationConfig.from_file("configs/dense_mrf_process_line.json")
+        plan = generate_episode_plan(config)
+        segments = {segment["id"]: segment for segment in plan.facility["segments"]}
+        self.assertIn("s1_infeed_incline", segments)
+        infeed = segments["s1_infeed_incline"]
+        self.assertIn("surface_path", infeed)
+        self.assertEqual(len(infeed["surface_path"]["samples"]), 9)
+        self.assertIn("surface_normal", infeed)
+        self.assertEqual(tuple(plan.facility["spawn_points"][0]["position"]), tuple(infeed["surface_path"]["start"]))
+
+    def test_dense_topology_spawns_on_conveyor_centerline(self) -> None:
+        config = SimulationConfig.from_file("configs/dense_mrf_process_line.json")
+        plan = generate_episode_plan(config)
+        self.assertTrue(plan.events)
+        for event in plan.events[:5]:
+            self.assertEqual(event.spawn_segment_id, "s1_infeed_incline")
+            self.assertAlmostEqual(event.lane_offset, 0.0)
+            self.assertAlmostEqual(event.yaw_deg, 0.0)
+
+    def test_dense_topology_rejects_unanchored_conveyor_endpoints(self) -> None:
+        config = SimulationConfig.from_file("configs/dense_mrf_process_line.json")
+        broken_nodes = tuple(
+            replace(node, upstream_segment_ids=("s10_baler_feed",))
+            if node.id == "n11_ferrous_drop"
+            else node
+            for node in config.routing_nodes
+        )
+        broken_config = replace(config, mrf=replace(config.mrf, routing_nodes=broken_nodes))
+        with self.assertRaisesRegex(ValueError, "meaningful downstream endpoint"):
+            broken_config.validate()
+
+    def test_large_v2_config_loads_with_expected_topology_density(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        self.assertEqual(config.environment.layout_preset, "recycling_facility_large_v2")
+        self.assertGreaterEqual(len(config.conveyor_segments), 20)
+        self.assertGreaterEqual(len(config.machine_zones), 8)
+        self.assertGreaterEqual(len(config.platforms), 4)
+        self.assertGreaterEqual(len(config.drop_zones), 6)
+        split_count = sum(1 for node in config.routing_nodes if node.node_type == "split")
+        merge_count = sum(1 for node in config.routing_nodes if node.node_type == "merge")
+        self.assertGreaterEqual(split_count, 3)
+        self.assertGreaterEqual(merge_count, 2)
+
+    def test_large_v2_dry_run_exports_large_topology_metadata(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        plan = generate_episode_plan(config)
+        self.assertEqual(plan.facility["environment"]["layout_preset"], "recycling_facility_large_v2")
+        self.assertGreaterEqual(len(plan.facility["segments"]), 20)
+        self.assertGreaterEqual(len(plan.facility["machines"]), 8)
+        self.assertGreaterEqual(len(plan.facility["platforms"]), 4)
+        self.assertGreaterEqual(len(plan.facility["drop_zones"]), 6)
+        self.assertIn("E. Bunker, reject, and outbound staging", plan.facility["subareas"])
+
+    def test_large_v2_runner_uses_topology_layout_dispatch(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        runner = IsaacConveyorRunner(config, headless=True)
+        self.assertTrue(runner._uses_topology_layout())
+        self.assertEqual(runner._topology_layout_preset(), "recycling_facility_large_v2")
+
+    def test_large_v2_runner_uses_internal_camera_poses(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        runner = IsaacConveyorRunner(config, headless=True)
+        position, look_at, focal_length = runner._viewport_camera_pose()
+        self.assertEqual(position, (-32.0, -20.0, 17.5))
+        self.assertEqual(look_at, (34.0, 4.0, 7.4))
+        self.assertEqual(focal_length, 18.0)
+        self.assertEqual(runner._overview_viewport_camera_path(), "/World/Camera/WideOverviewCamera")
+
+    def test_large_v2_routes_cover_major_commodity_branches(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        pet_route = resolve_material_route(config, config.item_catalog["pet_bottle"])
+        hdpe_route = resolve_material_route(config, config.item_catalog["hdpe_jug"])
+        ferrous_route = resolve_material_route(config, config.item_catalog["steel_can"])
+        nonferrous_route = resolve_material_route(config, config.item_catalog["aluminum_can"])
+        glass_route = resolve_material_route(config, config.item_catalog["glass_bottle"])
+        residue_route = resolve_material_route(config, config.item_catalog["residue"])
+        self.assertIn("s10_pet_branch", pet_route.segment_ids)
+        self.assertIn("s11_hdpe_branch", hdpe_route.segment_ids)
+        self.assertEqual(ferrous_route.drop_zone_id, "dz_ferrous_bunker")
+        self.assertEqual(nonferrous_route.outbound_zone_id, "dz_outbound_staging")
+        self.assertEqual(glass_route.drop_zone_id, "dz_glass_bunker")
+        self.assertEqual(residue_route.final_status, "residual_disposed")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from recycling_mrf.config import SimulationConfig
+from recycling_mrf.geometry import (
+    segment_axes,
+    segment_center,
+    segment_debug_samples,
+    segment_surface_point,
+)
 
 
 @dataclass(frozen=True)
@@ -121,18 +127,6 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
         y_max=config.main_belt.width / 2,
         z_top=config.main_belt.height,
     )
-    spawn_zone = SpawnZone(
-        center=(
-            belt_bounds.x_min + 0.45,
-            0.0,
-            belt_bounds.z_top + config.spawn.drop_height / 2,
-        ),
-        size=(
-            0.25,
-            min(config.main_belt.width, config.spawn.lane_jitter * 2 + 0.2),
-            config.spawn.drop_height,
-        ),
-    )
     stations = tuple(
         StationZone(
             name=station.name,
@@ -167,6 +161,38 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
         bin_offset=config.environment.bin_offset,
         station_marker_height=config.environment.station_marker_height,
     )
+    if config.conveyor_segments and config.spawn_segment_id is not None:
+        spawn_segment = next(segment for segment in config.conveyor_segments if segment.id == config.spawn_segment_id)
+        tangent, lateral, normal = segment_axes(spawn_segment)
+        spawn_surface = segment_surface_point(spawn_segment, 0.0, 0.0)
+        spawn_zone = SpawnZone(
+            center=tuple(
+                spawn_surface[idx] + normal[idx] * (config.spawn.drop_height / 2)
+                for idx in range(3)
+            ),
+            size=(
+                0.4,
+                min(spawn_segment.width, max(config.spawn.lane_jitter * 2 + 0.2, 0.4)),
+                config.spawn.drop_height,
+            ),
+        )
+    else:
+        tangent = (1.0, 0.0, 0.0)
+        lateral = (0.0, 1.0, 0.0)
+        normal = (0.0, 0.0, 1.0)
+        spawn_surface = (belt_bounds.x_min + 0.45, 0.0, belt_bounds.z_top)
+        spawn_zone = SpawnZone(
+            center=(
+                belt_bounds.x_min + 0.45,
+                0.0,
+                belt_bounds.z_top + config.spawn.drop_height / 2,
+            ),
+            size=(
+                0.25,
+                min(config.main_belt.width, config.spawn.lane_jitter * 2 + 0.2),
+                config.spawn.drop_height,
+            ),
+        )
     segments = tuple(
         {
             "id": segment.id,
@@ -190,6 +216,18 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
             "role": segment.role,
             "length": segment.length,
             "incline_angle_deg": segment.incline_angle_deg,
+            "center_pose": {
+                "position": segment_center(segment),
+                "yaw_deg": segment.start_pose.yaw_deg,
+            },
+            "surface_path": {
+                "start": segment_surface_point(segment, 0.0, 0.0),
+                "end": segment_surface_point(segment, segment.length, 0.0),
+                "samples": segment_debug_samples(segment),
+            },
+            "tangent": segment_axes(segment)[0],
+            "lateral_axis": segment_axes(segment)[1],
+            "surface_normal": segment_axes(segment)[2],
         }
         for segment in config.conveyor_segments
     ) or (
@@ -209,6 +247,22 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
             "role": "legacy_mainline",
             "length": config.main_belt.length,
             "incline_angle_deg": 0.0,
+            "center_pose": {"position": (0.0, 0.0, config.main_belt.height / 2), "yaw_deg": 0.0},
+            "surface_path": {
+                "start": (-config.main_belt.length / 2, 0.0, config.main_belt.height),
+                "end": (config.main_belt.length / 2, 0.0, config.main_belt.height),
+                "samples": tuple(
+                    (
+                        -config.main_belt.length / 2 + idx * (config.main_belt.length / 8),
+                        0.0,
+                        config.main_belt.height,
+                    )
+                    for idx in range(9)
+                ),
+            },
+            "tangent": (1.0, 0.0, 0.0),
+            "lateral_axis": (0.0, 1.0, 0.0),
+            "surface_normal": (0.0, 0.0, 1.0),
         },
     )
     nodes = tuple(
@@ -251,7 +305,10 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
         {
             "id": "primary_spawn",
             "segment_id": config.spawn_segment_id or "main_belt",
-            "position": segments[0]["start_pose"]["position"],
+            "position": spawn_surface,
+            "tangent": tangent,
+            "lateral_axis": lateral,
+            "surface_normal": normal,
             "drop_height": config.spawn.drop_height,
         },
     )

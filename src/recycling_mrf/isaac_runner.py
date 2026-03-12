@@ -2,8 +2,25 @@ from __future__ import annotations
 
 import math
 import traceback
+from dataclasses import dataclass
 
 from recycling_mrf.config import SimulationConfig
+from recycling_mrf.geometry import (
+    add,
+    clamp_lane_offset,
+    dot,
+    normalize,
+    scale,
+    segment_axes,
+    segment_center,
+    segment_debug_samples,
+    segment_incline_angle_deg,
+    segment_item_pose,
+    segment_length,
+    segment_surface_point,
+    segment_yaw_deg,
+    subtract,
+)
 from recycling_mrf.scenario import (
     EpisodePlan,
     build_metadata_frame_times,
@@ -14,6 +31,19 @@ from recycling_mrf.scenario import (
 
 class IsaacSimUnavailableError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class TopologyPoseState:
+    local_position: tuple[float, float, float]
+    orientation: tuple[float, float, float, float]
+    segment_id: str | None
+    distance: float
+    contact_point: tuple[float, float, float] | None
+    tangent: tuple[float, float, float] | None
+    lateral: tuple[float, float, float] | None
+    normal: tuple[float, float, float] | None
+    done: bool
 
 
 class IsaacConveyorRunner:
@@ -35,6 +65,7 @@ class IsaacConveyorRunner:
         self.loop_cycle_seconds = loop_cycle_seconds
         self.detections = detections
         self._stage = None
+        self._alignment_warning_keys: set[str] = set()
 
     def run(self) -> EpisodePlan:
         plan = self._generate_plan()
@@ -154,8 +185,12 @@ class IsaacConveyorRunner:
             dome_light.CreateIntensityAttr(self.config.environment.dome_light_intensity * 0.28)
             self._add_segment_a_lighting(UsdLux, Gf)
         elif self._uses_topology_layout():
-            dome_light.CreateIntensityAttr(self.config.environment.dome_light_intensity * 0.18)
-            self._add_dense_mrf_lighting(UsdLux, Gf)
+            if self._topology_layout_preset() == "recycling_facility_large_v2":
+                dome_light.CreateIntensityAttr(self.config.environment.dome_light_intensity * 0.12)
+                self._add_large_v2_lighting(UsdLux, Gf)
+            else:
+                dome_light.CreateIntensityAttr(self.config.environment.dome_light_intensity * 0.18)
+                self._add_dense_mrf_lighting(UsdLux, Gf)
 
         if self.config.environment.mode == "warehouse":
             self._load_environment(add_reference_to_stage, get_assets_root_path)
@@ -169,27 +204,35 @@ class IsaacConveyorRunner:
             if self.config.environment.layout_preset == "edco_conveyor_segment_a":
                 self._add_edco_conveyor_segment_visuals(plan, UsdGeom)
             elif self._uses_topology_layout():
-                self._add_dense_mrf_visuals(plan, UsdGeom)
+                if self._topology_layout_preset() == "recycling_facility_large_v2":
+                    self._add_large_v2_visuals(plan, UsdGeom)
+                else:
+                    self._add_dense_mrf_visuals(plan, UsdGeom)
             else:
                 self._add_edco_mrf_visuals(plan, UsdGeom)
             self._add_camera_rig(world, FixedCuboid)
             self._define_viewport_camera(UsdGeom, Gf)
             self._define_overhead_camera(UsdGeom, Gf)
             if self._uses_topology_layout():
-                self._define_dense_aux_cameras(UsdGeom, Gf)
+                if self._topology_layout_preset() == "recycling_facility_large_v2":
+                    self._define_large_v2_aux_cameras(UsdGeom, Gf)
+                else:
+                    self._define_dense_aux_cameras(UsdGeom, Gf)
 
         camera = None
+        viewport_position, viewport_look_at, _ = self._viewport_camera_pose()
+
         if self.headless:
             camera = Camera(
                 prim_path="/World/Camera/RGBCamera",
-                position=self.config.camera.position,
+                position=viewport_position,
                 resolution=self.config.camera.resolution,
                 frequency=max(1, int(round(1.0 / self.config.render_dt))),
             )
             camera.initialize()
             camera.set_world_pose(
-                position=self.config.camera.position,
-                orientation=self._camera_orientation(self.config.camera.position, self.config.camera.look_at),
+                position=viewport_position,
+                orientation=self._camera_orientation(viewport_position, viewport_look_at),
             )
 
         frame_times = set(build_metadata_frame_times(self.config))
@@ -204,7 +247,11 @@ class IsaacConveyorRunner:
             elif self.viewport_mode == "overhead" and not self.bare_bones:
                 self._set_viewport_camera(simulation_app, get_active_viewport, "/World/Camera/OverheadCamera")
             else:
-                self._frame_viewport_on_conveyor(simulation_app, get_active_viewport)
+                overview_camera_path = self._overview_viewport_camera_path()
+                if overview_camera_path is not None and not self.bare_bones:
+                    self._set_viewport_camera(simulation_app, get_active_viewport, overview_camera_path)
+                else:
+                    self._frame_viewport_on_conveyor(simulation_app, get_active_viewport)
 
         if self.loop and not self._use_recirculating_loop():
             self._run_looping_cycles(
@@ -341,6 +388,45 @@ class IsaacConveyorRunner:
             accent_xform = UsdGeom.Xformable(accent.GetPrim())
             accent_xform.AddTranslateOp().Set(position)
 
+    def _add_large_v2_lighting(self, UsdLux, Gf) -> None:
+        if self._stage is None:
+            return
+        from pxr import UsdGeom  # type: ignore
+
+        key = UsdLux.DistantLight.Define(self._stage, "/World/Lights/LargeV2Key")
+        key.CreateIntensityAttr(1800.0)
+        key.CreateColorAttr((1.0, 0.96, 0.92))
+        key_xform = UsdGeom.Xformable(key.GetPrim())
+        key_xform.AddRotateXYZOp().Set((52.0, -18.0, -20.0))
+
+        fill = UsdLux.DistantLight.Define(self._stage, "/World/Lights/LargeV2Fill")
+        fill.CreateIntensityAttr(780.0)
+        fill.CreateColorAttr((0.82, 0.88, 0.98))
+        fill_xform = UsdGeom.Xformable(fill.GetPrim())
+        fill_xform.AddRotateXYZOp().Set((74.0, 26.0, 112.0))
+
+        x_positions = [-48.0, -28.0, -8.0, 12.0, 32.0, 52.0, 72.0, 92.0, 112.0]
+        y_rows = (-18.0, 0.0, 18.0)
+        for row_index, y_pos in enumerate(y_rows):
+            for col_index, x_pos in enumerate(x_positions):
+                light = UsdLux.RectLight.Define(self._stage, f"/World/Lights/LargeV2HighBay_{row_index}_{col_index}")
+                light.CreateIntensityAttr(24000.0 if row_index == 1 else 21000.0)
+                light.CreateColorAttr((0.95, 0.95, 0.92))
+                light.CreateWidthAttr(8.0)
+                light.CreateHeightAttr(1.4)
+                light.CreateNormalizeAttr(True)
+                xform = UsdGeom.Xformable(light.GetPrim())
+                xform.AddTranslateOp().Set((x_pos, y_pos, 19.6))
+                xform.AddRotateXYZOp().Set((90.0, 0.0, 0.0))
+
+        for idx, position in enumerate(((-44.0, 10.0, 8.0), (12.0, 0.5, 10.8), (46.0, 10.0, 13.0), (78.0, 5.0, 8.2), (103.0, 0.0, 4.4))):
+            accent = UsdLux.SphereLight.Define(self._stage, f"/World/Lights/LargeV2Accent_{idx}")
+            accent.CreateIntensityAttr(1100.0)
+            accent.CreateRadiusAttr(0.55)
+            accent.CreateColorAttr((1.0, 0.7, 0.46))
+            accent_xform = UsdGeom.Xformable(accent.GetPrim())
+            accent_xform.AddTranslateOp().Set(position)
+
     def _add_station_geometry(self, plan: EpisodePlan, world, FixedCuboid) -> None:
         segment_a = self.config.environment.layout_preset == "edco_conveyor_segment_a"
         colors = {
@@ -432,6 +518,9 @@ class IsaacConveyorRunner:
             )
 
     def _add_topology_facility_geometry(self, plan: EpisodePlan, world, FixedCuboid) -> None:
+        if self._topology_layout_preset() == "recycling_facility_large_v2":
+            self._add_large_v2_facility_geometry(plan, world, FixedCuboid)
+            return
         segment_data = {segment["id"]: segment for segment in plan.facility.get("segments", [])}
         floor = world.scene.add(
             FixedCuboid(
@@ -452,6 +541,36 @@ class IsaacConveyorRunner:
                     position=self._line_to_world(center),
                     scale=(length, segment["width"], segment["thickness"]),
                     color=self._color_array((0.11, 0.11, 0.12)),
+                )
+            )
+            self._disable_collisions(belt)
+            self._rotate_scene_object(
+                belt,
+                center,
+                (0.0, -incline_deg, yaw_deg),
+            )
+
+    def _add_large_v2_facility_geometry(self, plan: EpisodePlan, world, FixedCuboid) -> None:
+        segment_data = {segment["id"]: segment for segment in plan.facility.get("segments", [])}
+        floor = world.scene.add(
+            FixedCuboid(
+                prim_path="/World/RecyclingLine/Facility/Floor",
+                name="facility_floor_large_v2",
+                position=self._line_to_world((31.0, 3.0, -0.05)),
+                scale=(166.0, 74.0, 0.1),
+                color=self._color_array((0.62, 0.63, 0.64)),
+            )
+        )
+        self._disable_collisions(floor)
+        for segment in segment_data.values():
+            center, length, yaw_deg, incline_deg = self._segment_geometry(segment)
+            belt = world.scene.add(
+                FixedCuboid(
+                    prim_path=f"/World/RecyclingLine/Facility/{self._safe_token(segment['id'])}/Belt",
+                    name=f"{segment['id']}_belt",
+                    position=self._line_to_world(center),
+                    scale=(length, segment["width"], segment["thickness"]),
+                    color=self._color_array((0.08, 0.08, 0.09)),
                 )
             )
             self._disable_collisions(belt)
@@ -500,6 +619,7 @@ class IsaacConveyorRunner:
 
         for segment in plan.facility.get("segments", []):
             self._add_conveyor_visual_assembly(segment, machine_green, steel_gray, guardrail_yellow, walkway_black)
+        self._add_topology_path_debug(plan.facility.get("segments", []), accent_orange)
         for node in plan.facility.get("nodes", []):
             self._add_routing_node_visual(node, segment_data, machine_green, steel_gray, bunker_gray)
 
@@ -582,6 +702,342 @@ class IsaacConveyorRunner:
                 accent_orange,
                 (0.82, 0.96, 0.2),
             )
+
+    def _add_large_v2_visuals(self, plan: EpisodePlan, UsdGeom) -> None:
+        if self._stage is None:
+            return
+        UsdGeom.Xform.Define(self._stage, "/World/RecyclingLine/Visuals")
+        machine_green = (0.16, 0.46, 0.31)
+        guardrail_yellow = (0.94, 0.82, 0.18)
+        walkway_black = (0.13, 0.14, 0.15)
+        steel_gray = (0.54, 0.57, 0.6)
+        hopper_gray = (0.42, 0.44, 0.46)
+        bunker_gray = (0.63, 0.66, 0.69)
+        duct_blue = (0.16, 0.3, 0.54)
+        accent_orange = (0.95, 0.46, 0.18)
+        concrete_gray = (0.48, 0.49, 0.5)
+        rust_brown = (0.52, 0.33, 0.18)
+        grime_dark = (0.18, 0.18, 0.17)
+        safety_red = (0.68, 0.16, 0.16)
+        wall_gray = (0.74, 0.75, 0.76)
+        roof_gray = (0.58, 0.6, 0.62)
+        segment_data = {segment["id"]: segment for segment in plan.facility.get("segments", [])}
+
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/FloorPad", "cube", (31.0, 3.0, -0.05), (166.0, 74.0, 0.1), (0.56, 0.56, 0.57))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/NorthWall", "cube", (31.0, 38.2, 10.5), (166.0, 0.5, 21.0), wall_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/SouthWall", "cube", (31.0, -32.2, 10.5), (166.0, 0.5, 21.0), (0.7, 0.71, 0.72))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/WestWall", "cube", (-52.2, 3.0, 10.5), (0.5, 74.0, 21.0), wall_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/EastWall", "cube", (114.2, 3.0, 10.5), (0.5, 74.0, 21.0), wall_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/Roof", "cube", (31.0, 3.0, 21.4), (166.0, 74.0, 0.34), roof_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/Clerestory", "cube", (31.0, 3.0, 19.6), (160.0, 5.2, 0.22), (0.88, 0.9, 0.92))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/WestDoor", "cube", (-51.8, 13.0, 4.8), (0.2, 9.0, 9.6), (0.24, 0.24, 0.26))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/EastDoor", "cube", (113.8, -4.0, 4.6), (0.2, 8.4, 9.2), (0.24, 0.24, 0.26))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/CableTrayNorth", "cube", (28.0, 24.5, 16.8), (144.0, 0.28, 0.18), concrete_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/CableTraySouth", "cube", (36.0, -18.0, 16.2), (130.0, 0.26, 0.18), concrete_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/AirMain", "cylinder", (20.0, 28.0, 17.4), (0.34, 0.34, 106.0), duct_blue, rotate=(0.0, 90.0, 0.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/AirDropA", "cylinder", (-18.0, 28.0, 11.8), (0.16, 0.16, 11.2), duct_blue)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/AirDropB", "cylinder", (46.0, 28.0, 12.6), (0.16, 0.16, 9.6), duct_blue)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Building/AirDropC", "cylinder", (86.0, 28.0, 10.8), (0.16, 0.16, 13.0), duct_blue)
+
+        for x_pos in (-44.0, -24.0, -4.0, 16.0, 36.0, 56.0, 76.0, 96.0, 112.0):
+            for y_pos in (-26.0, 0.0, 28.0):
+                self._add_static_visual(
+                    f"/World/RecyclingLine/Visuals/Structure/{self._safe_token(f'Column_{x_pos}_{y_pos}')}",
+                    "cube",
+                    (x_pos, y_pos, 10.0),
+                    (0.42, 0.42, 20.0),
+                    steel_gray,
+                )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Structure/{self._safe_token(f'Truss_{x_pos}')}",
+                "cube",
+                (x_pos, 3.0, 18.8),
+                (0.3, 64.0, 0.3),
+                steel_gray,
+            )
+        for y_pos in (-22.0, 0.0, 22.0):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Structure/{self._safe_token(f'LongTruss_{y_pos}')}",
+                "cube",
+                (31.0, y_pos, 19.4),
+                (156.0, 0.24, 0.24),
+                steel_gray,
+            )
+
+        self._add_static_visual("/World/RecyclingLine/Visuals/Infeed/TippingFloor", "cube", (-48.0, 15.5, 0.08), (18.0, 12.0, 0.16), (0.6, 0.6, 0.6))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Infeed/DeepHopper", "cube", (-50.0, 11.8, 2.1), (9.2, 7.2, 4.2), hopper_gray, rotate=(0.0, 0.0, -10.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Infeed/PushWall", "cube", (-42.4, 18.5, 2.3), (14.0, 0.5, 4.6), concrete_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Infeed/LoaderPileA", "cube", (-47.5, 15.0, 0.6), (3.6, 2.6, 1.1), (0.74, 0.56, 0.28), rotate=(0.0, 0.0, 12.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Infeed/LoaderPileB", "cube", (-44.5, 13.0, 0.45), (2.8, 2.0, 0.8), (0.32, 0.36, 0.3), rotate=(0.0, 0.0, -10.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Infeed/TrafficBarrier", "cube", (-38.5, 8.4, 0.6), (6.6, 0.32, 1.2), safety_red)
+
+        for segment in plan.facility.get("segments", []):
+            self._add_conveyor_visual_assembly(segment, machine_green, steel_gray, guardrail_yellow, walkway_black)
+        self._add_topology_path_debug(plan.facility.get("segments", []), accent_orange)
+
+        for node in plan.facility.get("nodes", []):
+            self._add_routing_node_visual(node, segment_data, machine_green, steel_gray, bunker_gray)
+        for platform in plan.facility.get("platforms", []):
+            self._add_platform_visual(platform, walkway_black, guardrail_yellow, steel_gray)
+        for machine in plan.facility.get("machines", []):
+            self._add_machine_visual(machine, machine_green, hopper_gray, bunker_gray, duct_blue, accent_orange)
+        for zone in plan.facility.get("drop_zones", []):
+            if zone["zone_type"] == "trailer":
+                fill = (0.56, 0.6, 0.64)
+            elif zone["zone_type"] == "outbound":
+                fill = (0.66, 0.68, 0.7)
+            else:
+                fill = bunker_gray
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/DropZones/{self._safe_token(zone['id'])}",
+                "cube",
+                zone["pose"]["position"],
+                zone["size"],
+                fill,
+            )
+
+        self._add_large_v2_manual_sort_bays(guardrail_yellow, bunker_gray, machine_green)
+        self._add_large_v2_belt_clutter(segment_data, grime_dark, rust_brown)
+        self._add_large_v2_floor_clutter(concrete_gray, bunker_gray, rust_brown, grime_dark, safety_red)
+        self._add_large_v2_camera_visuals(UsdGeom, guardrail_yellow, steel_gray)
+
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/ScreenHousing", "cube", (12.0, 0.5, 8.4), (20.0, 8.4, 6.2), machine_green)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/TransferBridge", "cube", (0.0, -4.2, 9.2), (22.0, 2.2, 0.26), walkway_black, rotate=(0.0, 0.0, -12.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/TransferBridgeRail", "cube", (0.0, -3.1, 10.0), (22.0, 0.08, 0.08), guardrail_yellow, rotate=(0.0, 0.0, -12.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/OpticalCabinetBank", "cube", (45.0, 15.8, 2.2), (8.0, 1.2, 4.0), bunker_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/MetalStairTower", "cube", (72.0, 10.6, 3.8), (3.6, 2.4, 0.22), walkway_black)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/MetalStairRun", "cube", (68.5, 11.8, 2.0), (7.2, 0.74, 0.22), guardrail_yellow, rotate=(0.0, 0.0, 34.0))
+        self._add_static_visual("/World/RecyclingLine/Visuals/Process/OutboundBalePad", "cube", (108.0, -8.0, 0.08), (20.0, 10.0, 0.16), concrete_gray)
+
+        for idx, position in enumerate(((-20.0, 4.4, 8.2), (-14.0, 7.2, 8.2), (44.0, 12.8, 11.4), (78.0, 6.8, 6.8), (99.0, -0.5, 3.4))):
+            self._add_worker(
+                f"/World/RecyclingLine/Visuals/Workers/LargeV2_{idx}",
+                position,
+                accent_orange,
+                (0.82, 0.96, 0.2),
+            )
+
+        for idx, bale_pos in enumerate(((109.0, -8.8, 0.46), (111.0, -7.0, 0.46), (113.5, -8.2, 0.46), (115.8, -6.6, 0.46))):
+            self._add_bale_stack(
+                f"/World/RecyclingLine/Visuals/Outbound/Bale_{idx}",
+                bale_pos,
+                (0.66, 0.54, 0.34) if idx % 2 == 0 else (0.42, 0.66, 0.82),
+            )
+
+    def _add_large_v2_manual_sort_bays(self, guardrail_yellow, bunker_gray, machine_green) -> None:
+        for idx, x_pos in enumerate((-24.0, -20.0, -16.0, -12.0, -8.0, -4.0)):
+            south_y = 0.8 if idx % 2 == 0 else 1.6
+            north_y = 10.2 if idx % 2 == 0 else 11.0
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Presort/SortBinSouth_{idx}",
+                "cube",
+                (x_pos, south_y, 1.2),
+                (2.1, 1.2, 2.2),
+                bunker_gray,
+            )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Presort/SortBinNorth_{idx}",
+                "cube",
+                (x_pos, north_y, 1.2),
+                (2.1, 1.2, 2.2),
+                bunker_gray,
+            )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Presort/SortChuteSouth_{idx}",
+                "cube",
+                (x_pos, 4.0, 6.0),
+                (1.0, 0.44, 3.0),
+                machine_green,
+                rotate=(0.0, 22.0, 0.0),
+            )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Presort/SortChuteNorth_{idx}",
+                "cube",
+                (x_pos, 8.2, 6.0),
+                (1.0, 0.44, 3.0),
+                machine_green,
+                rotate=(0.0, -22.0, 0.0),
+            )
+        self._add_static_visual("/World/RecyclingLine/Visuals/Presort/KickPlateSouth", "cube", (-16.0, 4.45, 7.55), (26.0, 0.08, 0.14), guardrail_yellow)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Presort/KickPlateNorth", "cube", (-16.0, 7.55, 7.55), (26.0, 0.08, 0.14), guardrail_yellow)
+
+    def _add_large_v2_belt_clutter(self, segment_data: dict[str, dict], grime_dark, rust_brown) -> None:
+        clutter_specs = [
+            ("s2_primary_infeed_incline", 0.12, "cube", (0.64, 0.38, 0.12), (0.78, 0.56, 0.24)),
+            ("s2_primary_infeed_incline", 0.26, "cylinder", (0.12, 0.12, 0.24), (0.18, 0.66, 0.92)),
+            ("s3_presort_sortline", 0.56, "cube", (0.26, 0.18, 0.04), (0.84, 0.82, 0.76)),
+            ("s5_screen_feed", 0.46, "cube", (0.14, 0.1, 0.18), (0.86, 0.24, 0.78)),
+            ("s9_optical_sort_line", 0.22, "cylinder", (0.08, 0.08, 0.24), (0.2, 0.68, 0.95)),
+            ("s9_optical_sort_line", 0.36, "cube", (0.28, 0.18, 0.04), (0.82, 0.56, 0.26)),
+            ("s13_metal_decline", 0.42, "cylinder", (0.07, 0.07, 0.13), (0.92, 0.9, 0.2)),
+            ("s21_baler_feed", 0.34, "cube", (0.42, 0.28, 0.08), (0.34, 0.3, 0.26))
+        ]
+        for idx, (segment_id, t, shape, item_scale, color) in enumerate(clutter_specs):
+            segment = segment_data.get(segment_id)
+            if segment is None:
+                continue
+            position, rotate = self._material_pose_on_segment(
+                segment,
+                t,
+                -0.14 if idx % 2 == 0 else 0.16,
+                item_scale,
+                idx,
+            )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Material/{self._safe_token(f'largev2_{segment_id}_{idx}')}",
+                shape,
+                position,
+                item_scale,
+                color,
+                rotate=rotate,
+            )
+        for idx, point in enumerate(((14.0, 1.8, 0.04), (46.0, 9.0, 0.04), (58.0, 22.2, 0.04), (101.0, 1.8, 0.04))):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Spills/LargeV2Residue_{idx}",
+                "cube",
+                point,
+                (0.64, 0.48, 0.08),
+                grime_dark if idx % 2 == 0 else rust_brown,
+                rotate=(0.0, 0.0, -18.0 + idx * 8.0),
+            )
+
+    def _add_large_v2_floor_clutter(self, concrete_gray, bunker_gray, rust_brown, grime_dark, safety_red) -> None:
+        for idx, position in enumerate(((-46.0, 20.5, 0.6), (-18.0, -18.0, 0.6), (22.0, 26.0, 0.6), (66.0, -14.0, 0.6), (104.0, -10.0, 0.6))):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Clutter/Pallet_{idx}",
+                "cube",
+                position,
+                (1.4, 1.1, 0.18),
+                rust_brown,
+            )
+        for idx, position in enumerate(((-34.0, 22.5, 0.52), (28.0, 23.0, 0.52), (88.0, -13.0, 0.52), (112.0, -6.5, 0.52))):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Clutter/Barrel_{idx}",
+                "cylinder",
+                position,
+                (0.38, 0.38, 0.98),
+                safety_red if idx % 2 == 0 else bunker_gray,
+            )
+        for idx, position in enumerate(((-32.0, 20.0, 1.1), (42.0, 14.6, 1.2), (74.0, 11.6, 1.2), (108.0, -2.0, 1.2))):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Clutter/ControlPanel_{idx}",
+                "cube",
+                position,
+                (1.2, 0.7, 2.0),
+                bunker_gray,
+            )
+        for idx, point in enumerate(((-46.0, 8.5, 0.02), (-10.0, -12.0, 0.02), (26.0, 30.0, 0.02), (88.0, -18.0, 0.02), (112.0, -11.0, 0.02))):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/FloorMarking/Stripe_{idx}",
+                "cube",
+                point,
+                (6.0, 0.18, 0.02),
+                (0.96, 0.84, 0.18),
+            )
+        for idx, point in enumerate(((-42.0, 10.0, 0.02), (18.0, 0.0, 0.02), (46.0, 18.0, 0.02), (76.0, 5.0, 0.02), (104.0, -5.0, 0.02))):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/FloorMarking/Grime_{idx}",
+                "cube",
+                point,
+                (3.4, 2.0, 0.02),
+                grime_dark,
+            )
+        for idx, x_pos in enumerate((-38.0, -6.0, 28.0, 58.0, 86.0)):
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Safety/Bollard_{idx}",
+                "cylinder",
+                (x_pos, 30.0 if idx < 3 else -24.0, 0.6),
+                (0.16, 0.16, 1.2),
+                safety_red,
+            )
+        self._add_static_visual("/World/RecyclingLine/Visuals/Clutter/MaintenanceCrib", "cube", (94.0, -19.0, 1.6), (6.0, 4.0, 3.2), bunker_gray)
+        self._add_static_visual("/World/RecyclingLine/Visuals/Clutter/ServiceCart", "cube", (90.0, -15.0, 0.7), (1.8, 1.2, 0.8), concrete_gray)
+
+    def _large_v2_camera_specs(self) -> dict[str, dict[str, object]]:
+        return {
+            "WideOverview": {
+                "position": (-32.0, -20.0, 17.5),
+                "look_at": (34.0, 4.0, 7.4),
+                "focal_length": 18.0,
+            },
+            "CatwalkHero": {
+                "position": (-33.0, 1.4, 10.8),
+                "look_at": (-18.0, 6.0, 8.0),
+                "focal_length": 24.0,
+            },
+            "InfeedProcess": {
+                "position": (-46.0, 21.0, 8.8),
+                "look_at": (-33.0, 10.5, 4.8),
+                "focal_length": 26.0,
+            },
+            "OutboundZone": {
+                "position": (108.0, -12.0, 7.0),
+                "look_at": (95.0, 1.5, 3.6),
+                "focal_length": 22.0,
+            },
+            "OverviewInspect": {
+                "position": (52.0, 22.0, 15.8),
+                "look_at": (46.0, 9.5, 10.0),
+                "focal_length": 26.0,
+            },
+            "Overhead": {
+                "position": (36.0, -2.0, 17.8),
+                "look_at": (34.0, 6.0, 6.8),
+                "focal_length": 16.0,
+            },
+        }
+
+    def _add_large_v2_camera_visuals(self, UsdGeom, guardrail_yellow, steel_gray) -> None:
+        if self._stage is None:
+            return
+        from pxr import Gf  # type: ignore
+
+        for name, spec in self._large_v2_camera_specs().items():
+            if name == "Overhead":
+                continue
+            position = spec["position"]
+            look_at = spec["look_at"]
+            focal = spec["focal_length"]
+            pole_height = max(position[2] - 0.4, 1.0)
+            root = f"/World/RecyclingLine/Visuals/Cameras/{name}"
+            self._add_static_visual(f"{root}/Pole", "cube", (position[0], position[1], pole_height / 2), (0.14, 0.14, pole_height), steel_gray)
+            self._add_static_visual(f"{root}/Head", "cube", position, (0.5, 0.24, 0.2), guardrail_yellow)
+            camera = UsdGeom.Camera.Define(self._stage, f"/World/Camera/{name}")
+            xformable = UsdGeom.Xformable(camera.GetPrim())
+            xformable.AddTranslateOp().Set(position)
+            orientation = self._camera_orientation(position, look_at)
+            quaternion = Gf.Quatf(
+                float(orientation[0]),
+                Gf.Vec3f(float(orientation[1]), float(orientation[2]), float(orientation[3])),
+            )
+            xformable.AddOrientOp().Set(quaternion)
+            camera.CreateFocalLengthAttr(focal)
+
+    def _define_large_v2_aux_cameras(self, UsdGeom, Gf) -> None:
+        if self._stage is None:
+            return
+        specs = (
+            ("/World/Camera/WideOverviewCamera", "WideOverview"),
+            ("/World/Camera/CatwalkHeroCamera", "CatwalkHero"),
+            ("/World/Camera/InfeedProcessCamera", "InfeedProcess"),
+            ("/World/Camera/OutboundZoneCamera", "OutboundZone"),
+        )
+        camera_specs = self._large_v2_camera_specs()
+        for path, spec_name in specs:
+            spec = camera_specs[spec_name]
+            position = spec["position"]
+            look_at = spec["look_at"]
+            focal = spec["focal_length"]
+            camera = UsdGeom.Camera.Define(self._stage, path)
+            xformable = UsdGeom.Xformable(camera.GetPrim())
+            xformable.AddTranslateOp().Set(position)
+            orientation = self._camera_orientation(position, look_at)
+            quaternion = Gf.Quatf(
+                float(orientation[0]),
+                Gf.Vec3f(float(orientation[1]), float(orientation[2]), float(orientation[3])),
+            )
+            xformable.AddOrientOp().Set(quaternion)
+            camera.CreateFocalLengthAttr(focal)
 
     def _add_edco_mrf_visuals(self, plan: EpisodePlan, UsdGeom) -> None:
         if self._stage is None:
@@ -1067,8 +1523,16 @@ class IsaacConveyorRunner:
         self._add_static_visual(f"{path_root}/Lower", "cube", position, (0.46, 0.7, 0.36), color)
         self._add_static_visual(f"{path_root}/Upper", "cube", (position[0], position[1], position[2] + 0.38), (0.42, 0.66, 0.32), color)
 
+    def _topology_layout_preset(self) -> str | None:
+        preset = self.config.environment.layout_preset
+        if not self.config.conveyor_segments:
+            return None
+        if preset in {"dense_mrf_process_line", "recycling_facility_large_v2"}:
+            return preset
+        return None
+
     def _uses_topology_layout(self) -> bool:
-        return self.config.environment.layout_preset == "dense_mrf_process_line" and bool(self.config.conveyor_segments)
+        return self._topology_layout_preset() is not None
 
     def _step_topology_scene(self, plan: EpisodePlan, spawned, current_time: float) -> None:
         for lifecycle in plan.item_lifecycles:
@@ -1076,17 +1540,20 @@ class IsaacConveyorRunner:
             if state is None:
                 continue
             item = state["object"]
-            local_position, yaw_deg, done = self._path_pose_for_lifecycle(plan, lifecycle, current_time)
+            pose_state = self._path_pose_for_lifecycle(plan, lifecycle, current_time)
             item.set_linear_velocity((0.0, 0.0, 0.0))
             item.set_world_pose(
-                position=self._line_to_world(local_position),
-                orientation=self._compose_yaw_orientation(math.radians(yaw_deg)),
+                position=self._line_to_world(pose_state.local_position),
+                orientation=pose_state.orientation,
             )
-            state["captured"] = done
+            state["captured"] = pose_state.done
+            state["current_segment_id"] = pose_state.segment_id
+            if pose_state.segment_id is not None:
+                self._validate_topology_item_alignment(item, lifecycle, pose_state)
             if self.detections:
                 self._update_detection_visual(plan, lifecycle, state, current_time)
 
-    def _path_pose_for_lifecycle(self, plan: EpisodePlan, lifecycle, current_time: float) -> tuple[tuple[float, float, float], float, bool]:
+    def _path_pose_for_lifecycle(self, plan: EpisodePlan, lifecycle, current_time: float) -> TopologyPoseState:
         segment_map = {segment["id"]: segment for segment in plan.facility.get("segments", [])}
         elapsed = max(current_time - lifecycle.spawn.spawn_time, 0.0)
         for segment_id in lifecycle.path_segments:
@@ -1094,10 +1561,15 @@ class IsaacConveyorRunner:
             length = self._segment_length(segment)
             travel_time = length / max(segment["belt_speed"], 1e-6)
             if elapsed <= travel_time:
-                t = max(0.0, min(1.0, elapsed / max(travel_time, 1e-6)))
-                position = self._point_on_segment(segment, t, lifecycle.spawn.position[1])
-                yaw_deg = self._segment_yaw(segment)
-                return position, yaw_deg, False
+                distance = min(length, elapsed * segment["belt_speed"])
+                return self._topology_pose_on_segment(
+                    segment=segment,
+                    segment_id=segment_id,
+                    distance=distance,
+                    item_height=lifecycle.spawn.size[2],
+                    lane_offset=lifecycle.spawn.lane_offset,
+                    done=False,
+                )
             elapsed -= travel_time
 
         drop_zone_id = lifecycle.outbound_zone_id or lifecycle.drop_zone_id
@@ -1105,49 +1577,77 @@ class IsaacConveyorRunner:
             for zone in plan.facility.get("drop_zones", []):
                 if zone["id"] == drop_zone_id:
                     pos = zone["pose"]["position"]
-                    return (pos[0], pos[1], pos[2] + lifecycle.spawn.size[2] / 2), zone["pose"]["yaw_deg"], True
+                    return TopologyPoseState(
+                        local_position=(pos[0], pos[1], pos[2] + lifecycle.spawn.size[2] / 2),
+                        orientation=self._compose_yaw_orientation(math.radians(zone["pose"]["yaw_deg"])),
+                        segment_id=None,
+                        distance=0.0,
+                        contact_point=None,
+                        tangent=None,
+                        lateral=None,
+                        normal=None,
+                        done=True,
+                    )
 
         last_segment = segment_map[lifecycle.path_segments[-1]]
-        end = last_segment["end_pose"]["position"]
-        return (end[0], end[1], end[2] + lifecycle.spawn.size[2] / 2), self._segment_yaw(last_segment), True
+        return self._topology_pose_on_segment(
+            segment=last_segment,
+            segment_id=last_segment["id"],
+            distance=self._segment_length(last_segment),
+            item_height=lifecycle.spawn.size[2],
+            lane_offset=lifecycle.spawn.lane_offset,
+            done=True,
+        )
+
+    def _topology_pose_on_segment(
+        self,
+        segment: dict,
+        segment_id: str,
+        distance: float,
+        item_height: float,
+        lane_offset: float,
+        done: bool,
+    ) -> TopologyPoseState:
+        lane_offset = clamp_lane_offset(segment, lane_offset)
+        position, tangent, lateral, normal, contact_point = segment_item_pose(
+            segment,
+            distance=distance,
+            lane_offset=lane_offset,
+            item_height=item_height,
+            clearance=self._item_surface_clearance(),
+        )
+        return TopologyPoseState(
+            local_position=position,
+            orientation=self._segment_orientation(tangent, lateral, normal),
+            segment_id=segment_id,
+            distance=distance,
+            contact_point=contact_point,
+            tangent=tangent,
+            lateral=lateral,
+            normal=normal,
+            done=done,
+        )
 
     def _point_on_segment(self, segment: dict, t: float, lane_offset: float) -> tuple[float, float, float]:
-        start = segment["start_pose"]["position"]
-        end = segment["end_pose"]["position"]
-        x = start[0] + (end[0] - start[0]) * t
-        y = start[1] + (end[1] - start[1]) * t
-        z = start[2] + (end[2] - start[2]) * t + segment["thickness"] / 2
-        yaw_rad = math.radians(self._segment_yaw(segment))
-        x += -math.sin(yaw_rad) * lane_offset
-        y += math.cos(yaw_rad) * lane_offset
-        return (x, y, z)
+        return segment_surface_point(
+            segment,
+            distance=self._segment_length(segment) * max(0.0, min(1.0, t)),
+            lane_offset=lane_offset,
+        )
 
     def _segment_length(self, segment: dict) -> float:
-        start = segment["start_pose"]["position"]
-        end = segment["end_pose"]["position"]
-        return math.sqrt(
-            (end[0] - start[0]) ** 2 +
-            (end[1] - start[1]) ** 2 +
-            (end[2] - start[2]) ** 2
-        )
+        return segment_length(segment)
 
     def _segment_yaw(self, segment: dict) -> float:
-        start = segment["start_pose"]["position"]
-        end = segment["end_pose"]["position"]
-        return math.degrees(math.atan2(end[1] - start[1], end[0] - start[0]))
+        return segment_yaw_deg(segment)
 
     def _segment_geometry(self, segment: dict) -> tuple[tuple[float, float, float], float, float, float]:
-        start = segment["start_pose"]["position"]
-        end = segment["end_pose"]["position"]
-        center = (
-            (start[0] + end[0]) / 2,
-            (start[1] + end[1]) / 2,
-            (start[2] + end[2]) / 2,
+        return (
+            segment_center(segment),
+            self._segment_length(segment),
+            self._segment_yaw(segment),
+            segment_incline_angle_deg(segment),
         )
-        yaw_deg = self._segment_yaw(segment)
-        horizontal = math.sqrt((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2)
-        incline_deg = math.degrees(math.atan2(end[2] - start[2], max(horizontal, 1e-6)))
-        return center, self._segment_length(segment), yaw_deg, incline_deg
 
     def _rotate_scene_object(self, obj, position: tuple[float, float, float], rotate_deg: tuple[float, float, float]) -> None:
         rx, ry, rz = [math.radians(value) for value in rotate_deg]
@@ -1198,6 +1698,32 @@ class IsaacConveyorRunner:
             self._add_static_visual(f"{root}/CatwalkDeck", "cube", walk_center, (length, 0.8, 0.08), walkway_black, rotate=(0.0, -incline_deg, yaw_deg))
             rail_center = self._point_on_segment(segment, 0.5, side * (segment["width"] / 2 + 1.08))
             self._add_static_visual(f"{root}/CatwalkRail", "cube", (rail_center[0], rail_center[1], rail_center[2] + 0.55), (length, 0.06, 0.06), guardrail_yellow, rotate=(0.0, -incline_deg, yaw_deg))
+
+    def _add_topology_path_debug(self, segments, color) -> None:
+        for segment in segments:
+            _, _, normal = segment_axes(segment)
+            midline = add(
+                segment_surface_point(segment, self._segment_length(segment) / 2, 0.0),
+                scale(normal, 0.03),
+            )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/DebugPaths/{self._safe_token(segment['id'])}/Centerline",
+                "cube",
+                midline,
+                (self._segment_length(segment), 0.03, 0.03),
+                color,
+                rotate=(0.0, -segment_incline_angle_deg(segment), self._segment_yaw(segment)),
+            )
+            samples = segment.get("surface_path", {}).get("samples", segment_debug_samples(segment))
+            for idx, point in enumerate(samples):
+                marker = add(tuple(point), scale(normal, 0.025))
+                self._add_static_visual(
+                    f"/World/RecyclingLine/Visuals/DebugPaths/{self._safe_token(segment['id'])}/Marker_{idx:02d}",
+                    "sphere",
+                    marker,
+                    (0.03, 0.03, 0.03),
+                    color,
+                )
 
     def _add_platform_visual(self, platform: dict, walkway_black, guardrail_yellow, steel_gray) -> None:
         root = f"/World/RecyclingLine/Visuals/Platforms/{self._safe_token(platform['id'])}"
@@ -1274,6 +1800,21 @@ class IsaacConveyorRunner:
                 machine_green,
                 rotate=(0.0, 18.0 if chute_y < 0 else -18.0, 0.0),
             )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Presort/SortBinFill_{idx}",
+                "cube",
+                (x_pos + (-0.18 if idx % 2 == 0 else 0.16), chute_y + (0.1 if idx % 2 == 0 else -0.08), 1.64),
+                (0.72, 0.48, 0.22),
+                (0.8, 0.58, 0.28) if idx % 2 == 0 else (0.84, 0.84, 0.78),
+                rotate=(0.0, 0.0, 10.0 if idx % 2 == 0 else -8.0),
+            )
+            self._add_static_visual(
+                f"/World/RecyclingLine/Visuals/Presort/SortBottle_{idx}",
+                "cylinder",
+                (x_pos + (0.22 if idx % 2 == 0 else -0.2), chute_y, 1.74),
+                (0.08, 0.08, 0.26),
+                (0.2, 0.74, 0.94) if idx % 2 == 0 else (0.9, 0.28, 0.76),
+            )
         self._add_static_visual("/World/RecyclingLine/Visuals/Presort/KickPlate", "cube", (-4.8, 1.62, 5.0), (10.8, 0.08, 0.16), guardrail_yellow)
 
     def _add_dense_belt_clutter(self, segment_data: dict[str, dict], grime_dark, rust_brown) -> None:
@@ -1281,8 +1822,6 @@ class IsaacConveyorRunner:
             ("s1_infeed_incline", 0.12, "cube", (0.46, 0.24, 0.08), (0.78, 0.56, 0.24)),
             ("s1_infeed_incline", 0.24, "cylinder", (0.12, 0.12, 0.24), (0.18, 0.66, 0.92)),
             ("s1_infeed_incline", 0.31, "cube", (0.16, 0.12, 0.12), (0.34, 0.3, 0.26)),
-            ("s2_presort_elevated", 0.22, "cube", (0.28, 0.18, 0.04), (0.9, 0.82, 0.72)),
-            ("s2_presort_elevated", 0.38, "cylinder", (0.08, 0.08, 0.13), (0.92, 0.88, 0.24)),
             ("s3_screen_feed", 0.55, "cube", (0.1, 0.08, 0.2), (0.84, 0.22, 0.78)),
             ("s6_optical_line", 0.18, "cylinder", (0.08, 0.08, 0.24), (0.2, 0.68, 0.95)),
             ("s6_optical_line", 0.31, "cube", (0.24, 0.18, 0.04), (0.82, 0.56, 0.26)),
@@ -1323,15 +1862,16 @@ class IsaacConveyorRunner:
         segment: dict,
         t: float,
         lane_offset: float,
-        scale: tuple[float, float, float],
+        item_scale: tuple[float, float, float],
         index: int,
     ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-        point = self._point_on_segment(segment, t, lane_offset)
+        distance = self._segment_length(segment) * max(0.0, min(1.0, t))
+        point = segment_surface_point(segment, distance, lane_offset)
+        _, _, normal = segment_axes(segment)
         _, _, yaw_deg, incline_deg = self._segment_geometry(segment)
-        # Sink the static clutter slightly into the belt surface so it reads as resting on the belt.
-        z = point[2] + scale[2] / 2 - 0.02
+        position = add(point, scale(normal, item_scale[2] / 2 - 0.015))
         rotate = (0.0, -incline_deg, yaw_deg + (8.0 if index % 2 == 0 else -6.0))
-        return (point[0], point[1], z), rotate
+        return position, rotate
 
     def _add_floor_clutter(self, concrete_gray, bunker_gray, rust_brown, grime_dark, safety_red) -> None:
         for idx, position in enumerate(((-14.5, 11.2, 0.55), (-8.0, -9.8, 0.55), (28.2, 10.4, 0.55), (41.0, -7.0, 0.55))):
@@ -1438,13 +1978,25 @@ class IsaacConveyorRunner:
         quat = Gf.Quatf(float(math.cos(yaw_rad / 2.0)), Gf.Vec3f(0.0, 0.0, float(math.sin(yaw_rad / 2.0))))
         xformable.AddOrientOp().Set(quat)
 
+    def _viewport_camera_pose(self) -> tuple[tuple[float, float, float], tuple[float, float, float], float]:
+        if self._topology_layout_preset() == "recycling_facility_large_v2":
+            spec = self._large_v2_camera_specs()["WideOverview"]
+            return spec["position"], spec["look_at"], float(spec["focal_length"])
+        return self.config.camera.position, self.config.camera.look_at, 24.0
+
+    def _overview_viewport_camera_path(self) -> str | None:
+        if self._uses_topology_layout():
+            return "/World/Camera/WideOverviewCamera"
+        return None
+
     def _add_camera_rig(self, world, FixedCuboid) -> None:
-        pole_height = max(self.config.camera.position[2] * 0.95, 0.5)
+        position, _, _ = self._viewport_camera_pose()
+        pole_height = max(position[2] * 0.95, 0.5)
         pole = world.scene.add(
             FixedCuboid(
                 prim_path="/World/Camera/Rig/Pole",
                 name="camera_rig_pole",
-                position=(self.config.camera.position[0], self.config.camera.position[1], pole_height / 2),
+                position=(position[0], position[1], pole_height / 2),
                 scale=(0.08, 0.08, pole_height),
                 color=self._color_array((0.24, 0.24, 0.26)),
             )
@@ -1455,9 +2007,9 @@ class IsaacConveyorRunner:
                 prim_path="/World/Camera/Rig/Head",
                 name="camera_rig_head",
                 position=(
-                    self.config.camera.position[0],
-                    self.config.camera.position[1],
-                    self.config.camera.position[2] - 0.12,
+                    position[0],
+                    position[1],
+                    position[2] - 0.12,
                 ),
                 scale=(0.24, 0.18, 0.14),
                 color=self._color_array((0.16, 0.16, 0.18)),
@@ -1468,13 +2020,14 @@ class IsaacConveyorRunner:
     def _define_viewport_camera(self, UsdGeom, Gf) -> None:
         if self._stage is None:
             return
+        position, look_at, focal_length = self._viewport_camera_pose()
         camera = UsdGeom.Camera.Define(self._stage, "/World/Camera/ViewportCamera")
         xformable = UsdGeom.Xformable(camera.GetPrim())
-        xformable.AddTranslateOp().Set(self.config.camera.position)
-        orientation = self._camera_orientation(self.config.camera.position, self.config.camera.look_at)
+        xformable.AddTranslateOp().Set(position)
+        orientation = self._camera_orientation(position, look_at)
         quaternion = Gf.Quatf(float(orientation[0]), Gf.Vec3f(float(orientation[1]), float(orientation[2]), float(orientation[3])))
         xformable.AddOrientOp().Set(quaternion)
-        camera.CreateFocalLengthAttr(24.0)
+        camera.CreateFocalLengthAttr(focal_length)
 
     def _define_overhead_camera(self, UsdGeom, Gf) -> None:
         if self._stage is None:
@@ -1489,7 +2042,10 @@ class IsaacConveyorRunner:
             Gf.Vec3f(float(orientation[1]), float(orientation[2]), float(orientation[3])),
         )
         xformable.AddOrientOp().Set(quaternion)
-        camera.CreateFocalLengthAttr(18.0)
+        focal_length = 18.0
+        if self._topology_layout_preset() == "recycling_facility_large_v2":
+            focal_length = float(self._large_v2_camera_specs()["Overhead"]["focal_length"])
+        camera.CreateFocalLengthAttr(focal_length)
 
     def _run_episode_loop(
         self,
@@ -1627,11 +2183,18 @@ class IsaacConveyorRunner:
                     "loop_birth_time": loop_birth_time,
                     "spawn_event": event,
                 }
-                angle = math.radians(event.yaw_deg)
-                spawned[event.item_id]["object"].set_world_pose(
-                    position=self._line_to_world(self._spawn_position(event)),
-                    orientation=self._compose_yaw_orientation(angle),
-                )
+                if self._uses_topology_layout():
+                    pose_state = self._path_pose_for_lifecycle(plan, lifecycle, rounded_time)
+                    spawned[event.item_id]["object"].set_world_pose(
+                        position=self._line_to_world(pose_state.local_position),
+                        orientation=pose_state.orientation,
+                    )
+                else:
+                    angle = math.radians(event.yaw_deg)
+                    spawned[event.item_id]["object"].set_world_pose(
+                        position=self._line_to_world(self._spawn_position(event)),
+                        orientation=self._compose_yaw_orientation(angle),
+                    )
 
         if self._uses_topology_layout():
             self._step_topology_scene(plan, spawned, rounded_time)
@@ -1723,6 +2286,15 @@ class IsaacConveyorRunner:
         root_path = f"/World/RecyclingLine/Items/{event.item_id}"
         size = event.size
         profile = event.visual_profile
+        if self._uses_topology_layout():
+            self._add_visual_part(
+                root_path,
+                "ContactPoint",
+                "sphere",
+                (0.0, 0.0, -size[2] / 2 - self._item_surface_clearance()),
+                (0.018, 0.018, 0.018),
+                (1.0, 0.42, 0.12),
+            )
         if profile == "auto":
             return
         if profile == "bottle":
@@ -1912,6 +2484,9 @@ class IsaacConveyorRunner:
         belt_length = self.config.main_belt.length
         belt_width = self.config.main_belt.width
         if self._uses_topology_layout():
+            if self._topology_layout_preset() == "recycling_facility_large_v2":
+                spec = self._large_v2_camera_specs()["Overhead"]
+                return spec["position"], spec["look_at"]
             return ((10.0, -18.0, 16.0), (12.0, 2.5, 5.2))
         if self.config.environment.layout_preset == "edco_conveyor_segment_a":
             position = (
@@ -2008,6 +2583,21 @@ class IsaacConveyorRunner:
         root = self.config.environment.conveyor_transform.position
         return (root[0] + x, root[1] + y, root[2] + point[2])
 
+    def _world_to_line(self, point: tuple[float, float, float]) -> tuple[float, float, float]:
+        root = self.config.environment.conveyor_transform.position
+        local_x = point[0] - root[0]
+        local_y = point[1] - root[1]
+        yaw = math.radians(-self.config.environment.conveyor_transform.yaw_deg)
+        x = local_x * math.cos(yaw) - local_y * math.sin(yaw)
+        y = local_x * math.sin(yaw) + local_y * math.cos(yaw)
+        return (x, y, point[2] - root[2])
+
+    def _line_direction_to_world(self, vector: tuple[float, float, float]) -> tuple[float, float, float]:
+        yaw = math.radians(self.config.environment.conveyor_transform.yaw_deg)
+        x = vector[0] * math.cos(yaw) - vector[1] * math.sin(yaw)
+        y = vector[0] * math.sin(yaw) + vector[1] * math.cos(yaw)
+        return normalize((x, y, vector[2]))
+
     def _line_velocity_to_world(self, velocity: tuple[float, float, float]) -> tuple[float, float, float]:
         yaw = math.radians(self.config.environment.conveyor_transform.yaw_deg)
         x = velocity[0] * math.cos(yaw) - velocity[1] * math.sin(yaw)
@@ -2017,6 +2607,109 @@ class IsaacConveyorRunner:
     def _compose_yaw_orientation(self, local_yaw_rad: float) -> tuple[float, float, float, float]:
         total_yaw = math.radians(self.config.environment.conveyor_transform.yaw_deg) + local_yaw_rad
         return (math.cos(total_yaw / 2), 0.0, 0.0, math.sin(total_yaw / 2))
+
+    def _item_surface_clearance(self) -> float:
+        return 0.008
+
+    def _segment_orientation(
+        self,
+        tangent: tuple[float, float, float],
+        lateral: tuple[float, float, float],
+        normal: tuple[float, float, float],
+    ) -> tuple[float, float, float, float]:
+        world_tangent = self._line_direction_to_world(tangent)
+        world_lateral = self._line_direction_to_world(lateral)
+        world_normal = self._line_direction_to_world(normal)
+        return self._quaternion_from_basis(world_tangent, world_lateral, world_normal)
+
+    def _quaternion_from_basis(
+        self,
+        x_axis: tuple[float, float, float],
+        y_axis: tuple[float, float, float],
+        z_axis: tuple[float, float, float],
+    ) -> tuple[float, float, float, float]:
+        m00, m10, m20 = x_axis
+        m01, m11, m21 = y_axis
+        m02, m12, m22 = z_axis
+        trace = m00 + m11 + m22
+        if trace > 0.0:
+            scale_factor = math.sqrt(trace + 1.0) * 2.0
+            w = 0.25 * scale_factor
+            x = (m21 - m12) / scale_factor
+            y = (m02 - m20) / scale_factor
+            z = (m10 - m01) / scale_factor
+        elif m00 > m11 and m00 > m22:
+            scale_factor = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+            w = (m21 - m12) / scale_factor
+            x = 0.25 * scale_factor
+            y = (m01 + m10) / scale_factor
+            z = (m02 + m20) / scale_factor
+        elif m11 > m22:
+            scale_factor = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+            w = (m02 - m20) / scale_factor
+            x = (m01 + m10) / scale_factor
+            y = 0.25 * scale_factor
+            z = (m12 + m21) / scale_factor
+        else:
+            scale_factor = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+            w = (m10 - m01) / scale_factor
+            x = (m02 + m20) / scale_factor
+            y = (m12 + m21) / scale_factor
+            z = 0.25 * scale_factor
+        length = math.sqrt(w * w + x * x + y * y + z * z)
+        if length <= 1e-6:
+            return (1.0, 0.0, 0.0, 0.0)
+        return (w / length, x / length, y / length, z / length)
+
+    def _quaternion_rotate(
+        self,
+        quaternion: tuple[float, float, float, float],
+        vector: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        w, x, y, z = quaternion
+        vx, vy, vz = vector
+        tx = 2.0 * (y * vz - z * vy)
+        ty = 2.0 * (z * vx - x * vz)
+        tz = 2.0 * (x * vy - y * vx)
+        return (
+            vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx),
+        )
+
+    def _validate_topology_item_alignment(self, item, lifecycle, pose_state: TopologyPoseState) -> None:
+        if pose_state.segment_id is None or pose_state.contact_point is None or pose_state.lateral is None or pose_state.normal is None or pose_state.tangent is None:
+            return
+        try:
+            world_position, world_orientation = item.get_world_pose()
+        except Exception:
+            return
+        local_position = self._world_to_line(tuple(float(value) for value in world_position))
+        expected_center = add(
+            pose_state.contact_point,
+            scale(pose_state.normal, lifecycle.spawn.size[2] / 2 + self._item_surface_clearance()),
+        )
+        lateral_offset = abs(dot(subtract(local_position, expected_center), pose_state.lateral))
+        actual_clearance = dot(subtract(local_position, pose_state.contact_point), pose_state.normal) - lifecycle.spawn.size[2] / 2
+        vertical_offset = abs(actual_clearance - self._item_surface_clearance())
+        expected_heading = self._line_direction_to_world(pose_state.tangent)
+        actual_heading = normalize(
+            self._quaternion_rotate(tuple(float(value) for value in world_orientation), (1.0, 0.0, 0.0))
+        )
+        heading_alignment = max(-1.0, min(1.0, dot(actual_heading, expected_heading)))
+        heading_error_deg = math.degrees(math.acos(heading_alignment))
+        if lateral_offset < 0.03 and vertical_offset < 0.03 and heading_error_deg < 6.0:
+            return
+        warning_key = f"{lifecycle.item_id}:{pose_state.segment_id}"
+        if warning_key in self._alignment_warning_keys:
+            return
+        self._alignment_warning_keys.add(warning_key)
+        print(
+            f"alignment warning item={lifecycle.item_id} segment={pose_state.segment_id} "
+            f"lateral_offset={lateral_offset:.4f} vertical_offset={vertical_offset:.4f} "
+            f"heading_error_deg={heading_error_deg:.2f}",
+            flush=True,
+        )
 
     def _capture_side_sign(self, y_value: float) -> float:
         return 1.0 if y_value >= 0 else -1.0

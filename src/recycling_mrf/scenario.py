@@ -13,6 +13,7 @@ from recycling_mrf.config import (
     SimulationConfig,
     StationConfig,
 )
+from recycling_mrf.geometry import segment_item_pose
 from recycling_mrf.scene import build_scene_definition
 
 
@@ -32,6 +33,7 @@ class SpawnEvent:
     visual_profile: str
     commodity_target: str | None
     spawn_segment_id: str | None = None
+    lane_offset: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -175,12 +177,14 @@ def generate_episode_plan(
 
         unit_id = f"{item_id_prefix}unit_{item_index:04d}"
         if spec.stream == "recycling":
-            lane_offset = rng.uniform(-config.spawn.lane_jitter, config.spawn.lane_jitter)
-            yaw_deg = rng.uniform(-config.spawn.yaw_jitter_deg, config.spawn.yaw_jitter_deg)
             if spawn_segment is not None:
+                lane_offset = 0.0
+                yaw_deg = 0.0
                 spawn_position = _spawn_position_on_segment(config, spawn_segment, lane_offset, spec.size[2])
                 spawn_segment_id = spawn_segment.id
             else:
+                lane_offset = rng.uniform(-config.spawn.lane_jitter, config.spawn.lane_jitter)
+                yaw_deg = rng.uniform(-config.spawn.yaw_jitter_deg, config.spawn.yaw_jitter_deg)
                 z = config.main_belt.height / 2 + config.spawn.drop_height + spec.size[2] / 2
                 spawn_position = (round(x_start, 4), round(lane_offset, 4), round(z, 4))
                 spawn_segment_id = None
@@ -199,6 +203,7 @@ def generate_episode_plan(
                 visual_profile=spec.visual_profile,
                 commodity_target=spec.commodity_target,
                 spawn_segment_id=spawn_segment_id,
+                lane_offset=round(lane_offset, 4),
             )
             lifecycle, material_unit = _build_recycling_lifecycle(
                 config=config,
@@ -836,22 +841,8 @@ def _spawn_position_on_segment(
     lane_offset: float,
     item_height: float,
 ) -> tuple[float, float, float]:
-    start = segment.start_pose.position
-    end = segment.end_pose.position
-    dx = end[0] - start[0]
-    dy = end[1] - start[1]
-    planar = math.sqrt(dx * dx + dy * dy)
-    if planar <= 1e-6:
-        right_x, right_y = 0.0, 1.0
-    else:
-        right_x = -dy / planar
-        right_y = dx / planar
-    position = (
-        round(start[0] + right_x * lane_offset, 4),
-        round(start[1] + right_y * lane_offset, 4),
-        round(start[2] + config.spawn.drop_height + item_height / 2, 4),
-    )
-    return position
+    position, _, _, _, _ = segment_item_pose(segment, distance=0.0, lane_offset=lane_offset, item_height=item_height, clearance=0.008)
+    return tuple(round(component, 4) for component in position)
 
 
 def _node_decision(route: MaterialRouteConfig, node_id: str) -> str:

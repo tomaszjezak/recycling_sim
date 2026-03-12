@@ -703,12 +703,19 @@ class SimulationConfig:
         machine_ids = {machine.id for machine in self.machine_zones}
         if len(machine_ids) != len(self.machine_zones):
             raise ValueError("mrf.machine_zones ids must be unique")
+        start_anchors: dict[str, set[str]] = {segment.id: set() for segment in self.conveyor_segments}
+        end_anchors: dict[str, set[str]] = {segment.id: set() for segment in self.conveyor_segments}
+        start_anchors[self.spawn_segment_id].add("spawn")
         for machine in self.machine_zones:
             if any(v <= 0 for v in machine.size):
                 raise ValueError(f"machine zone {machine.id} size must be positive")
             for segment_id in machine.input_segment_ids + machine.output_segment_ids:
                 if segment_id not in segment_ids:
                     raise ValueError(f"machine zone {machine.id} references unknown segment: {segment_id}")
+            for segment_id in machine.input_segment_ids:
+                end_anchors[segment_id].add(f"machine:{machine.id}:input")
+            for segment_id in machine.output_segment_ids:
+                start_anchors[segment_id].add(f"machine:{machine.id}:output")
 
         platform_ids = {platform.id for platform in self.platforms}
         if len(platform_ids) != len(self.platforms):
@@ -754,6 +761,22 @@ class SimulationConfig:
         if reachable != segment_ids:
             missing = sorted(segment_ids - reachable)
             raise ValueError(f"disconnected conveyor segments: {missing}")
+
+        for node in self.routing_nodes:
+            for segment_id in node.upstream_segment_ids:
+                end_anchors[segment_id].add(f"node:{node.id}:upstream")
+            for segment_id in node.downstream_segment_ids:
+                start_anchors[segment_id].add(f"node:{node.id}:downstream")
+
+        for segment in self.conveyor_segments:
+            if not start_anchors[segment.id]:
+                raise ValueError(
+                    f"segment {segment.id} has no meaningful upstream start anchor; connect it to spawn, a node, or a machine output"
+                )
+            if not end_anchors[segment.id]:
+                raise ValueError(
+                    f"segment {segment.id} has no meaningful downstream endpoint; terminate it into a node, drop, or machine inlet"
+                )
 
     def _require_facility(
         self,
@@ -868,7 +891,7 @@ class SimulationConfig:
 
     @property
     def supported_layout_presets(self) -> set[str]:
-        return {"full_mrf", "edco_conveyor_segment_a", "dense_mrf_process_line"}
+        return {"full_mrf", "edco_conveyor_segment_a", "dense_mrf_process_line", "recycling_facility_large_v2"}
 
     @property
     def supported_facility_types(self) -> set[str]:
