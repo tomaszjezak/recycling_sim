@@ -10,17 +10,17 @@ class SimulationConfigTests(unittest.TestCase):
     def test_load_demo_config(self) -> None:
         config = SimulationConfig.from_file("configs/conveyor_demo.json")
         self.assertEqual(config.seed, 7)
-        self.assertEqual(config.camera.resolution, (1280, 720))
-        self.assertEqual(config.main_belt.length, 9.0)
-        self.assertEqual(config.environment.mode, "warehouse")
-        self.assertEqual(config.environment.layout_preset, "full_mrf")
+        self.assertEqual(config.camera.resolution, (960, 540))
+        self.assertEqual(config.main_belt.length, 42.0)
+        self.assertEqual(config.environment.mode, "procedural")
+        self.assertEqual(config.environment.layout_preset, "edco_conveyor_segment_a")
         self.assertEqual(config.system.sources[0].id, "homes")
         self.assertEqual(config.system.stream_routes["recycling"].initial_facility_id, "edco_mrf")
         self.assertEqual(config.item_catalog["pet_bottle"].stream, "recycling")
         self.assertEqual(config.item_catalog["pet_bottle"].commodity_target, "pet")
         self.assertEqual(
             [station.station_type for station in config.stations[:5]],
-            ["tip_floor", "feeder", "presort", "screen", "magnet"],
+            ["feeder", "screen", "magnet", "optical_sorter", "manual_qc"],
         )
 
     def test_load_segment_anchor_config(self) -> None:
@@ -28,6 +28,21 @@ class SimulationConfigTests(unittest.TestCase):
         self.assertEqual(config.environment.mode, "procedural")
         self.assertEqual(config.environment.layout_preset, "edco_conveyor_segment_a")
         self.assertEqual(config.output_dir.name, "edco_conveyor_segment_a")
+
+    def test_large_v2_robotic_plastic_sort_schema_loads(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        self.assertEqual(config.system.commodity_end_markets["plastic_film"], "plastic_reclaimer")
+        self.assertEqual([zone.id for zone in config.perception_zones], ["pz_plastic_sort_line"])
+        self.assertEqual(
+            {cell.id for cell in config.robot_cells},
+            {"rc_pet_arm", "rc_hdpe_arm", "rc_film_arm"},
+        )
+        self.assertTrue(all(cell.robot_type == "xarm6" for cell in config.robot_cells))
+        self.assertEqual(
+            {cell.place_segment_id for cell in config.robot_cells},
+            {"s10_pet_branch", "s11_hdpe_branch", "s23_film_branch"},
+        )
+        self.assertTrue(all(cell.controller == "scripted_pick_policy" for cell in config.robot_cells))
 
     def test_invalid_item_mix_reference_raises(self) -> None:
         invalid = """
@@ -79,7 +94,7 @@ class SimulationConfigTests(unittest.TestCase):
 
     def test_overlapping_station_ranges_raise(self) -> None:
         invalid = json.loads(Path("configs/conveyor_demo.json").read_text())
-        invalid["mrf"]["stations"][2]["x_range"] = [-2.0, -0.5]
+        invalid["mrf"]["stations"][1]["x_range"] = [-16.0, -14.0]
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "overlap.json"
             path.write_text(json.dumps(invalid))

@@ -61,6 +61,38 @@ class MachineEvent:
 
 
 @dataclass(frozen=True)
+class PerceptionEvent:
+    zone_id: str
+    sensor_type: str
+    segment_id: str
+    timestamp: float
+    item_id: str
+    predicted_material_class: str
+    predicted_commodity: str | None
+    confidence: float
+    model_name: str
+
+
+@dataclass(frozen=True)
+class RobotPickEvent:
+    item_id: str
+    robot_cell_id: str
+    robot_type: str
+    source_segment_id: str
+    pick_distance: float
+    place_drop_zone_id: str
+    place_segment_id: str | None
+    place_distance: float
+    commodity_target: str | None
+    controller: str
+    detect_time: float | None
+    pick_start_time: float
+    pick_end_time: float
+    place_time: float
+    outcome: str
+
+
+@dataclass(frozen=True)
 class LifecycleStageEvent:
     stage: str
     timestamp: float
@@ -100,6 +132,8 @@ class ItemLifecycle:
     path_segments: list[str]
     node_events: list[RoutingNodeEvent]
     machine_events: list[MachineEvent]
+    perception_events: list[PerceptionEvent]
+    robot_pick_event: RobotPickEvent | None
     drop_zone_id: str | None
     outbound_zone_id: str | None
 
@@ -119,6 +153,8 @@ class EpisodePlan:
     events: list[SpawnEvent]
     material_units: list[MaterialUnit]
     item_lifecycles: list[ItemLifecycle]
+    perception_events: list[PerceptionEvent]
+    robot_pick_events: list[RobotPickEvent]
 
     def to_dict(self) -> dict:
         return {
@@ -135,6 +171,8 @@ class EpisodePlan:
             "events": [asdict(event) for event in self.events],
             "material_units": [asdict(unit) for unit in self.material_units],
             "item_lifecycles": [asdict(lifecycle) for lifecycle in self.item_lifecycles],
+            "perception_events": [asdict(event) for event in self.perception_events],
+            "robot_pick_events": [asdict(event) for event in self.robot_pick_events],
         }
 
     def write_json(self, path: str | Path) -> None:
@@ -155,10 +193,13 @@ def generate_episode_plan(
     recycling_events: list[SpawnEvent] = []
     recycling_lifecycles: list[ItemLifecycle] = []
     material_units: list[MaterialUnit] = []
+    perception_events: list[PerceptionEvent] = []
+    robot_pick_events: list[RobotPickEvent] = []
     elapsed = 0.0
     item_index = 0
     scene = build_scene_definition(config)
     topology = _build_topology_maps(config)
+    robot_cell_availability = {cell.id: 0.0 for cell in config.robot_cells}
     spawn_segment = topology["segments"].get(config.spawn_segment_id or "main_belt")
     x_start = -config.main_belt.length / 2 + 0.45
 
@@ -213,10 +254,14 @@ def generate_episode_plan(
                 spawn_event=spawn_event,
                 spec=spec,
                 force_mainline_exit=force_mainline_exit,
+                robot_cell_availability=robot_cell_availability,
             )
             recycling_events.append(spawn_event)
             recycling_lifecycles.append(lifecycle)
             material_units.append(material_unit)
+            perception_events.extend(lifecycle.perception_events)
+            if lifecycle.robot_pick_event is not None:
+                robot_pick_events.append(lifecycle.robot_pick_event)
         else:
             material_units.append(
                 _build_non_recycling_unit(
@@ -248,6 +293,8 @@ def generate_episode_plan(
         events=recycling_events,
         material_units=material_units,
         item_lifecycles=recycling_lifecycles,
+        perception_events=perception_events,
+        robot_pick_events=robot_pick_events,
     )
 
 
@@ -259,11 +306,14 @@ def _build_recycling_lifecycle(
     spawn_event: SpawnEvent,
     spec: ItemSpec,
     force_mainline_exit: bool,
+    robot_cell_availability: dict[str, float],
 ) -> tuple[ItemLifecycle, MaterialUnit]:
     route: list[StationEvent] = []
     lifecycle: list[LifecycleStageEvent] = []
     node_events: list[RoutingNodeEvent] = []
     machine_events: list[MachineEvent] = []
+    perception_events: list[PerceptionEvent] = []
+    robot_pick_event: RobotPickEvent | None = None
     recycling_route = config.system.stream_routes["recycling"]
 
     generated_time = max(spawn_event.spawn_time - 0.9, 0.0)
@@ -297,6 +347,30 @@ def _build_recycling_lifecycle(
     if topology["segments"] and not force_mainline_exit:
         material_route = resolve_material_route(config, spec)
         path_segments = list(material_route.segment_ids)
+        timing = _build_path_timing(config, material_route, spawn_event.spawn_time)
+        perception_events = _build_perception_events(
+            config=config,
+            spec=spec,
+            spawn_event=spawn_event,
+            material_route=material_route,
+            timing=timing,
+        )
+        robot_pick_event = _build_robot_pick_event(
+            config=config,
+            spec=spec,
+            spawn_event=spawn_event,
+            material_route=material_route,
+            timing=timing,
+            perception_events=perception_events,
+            robot_cell_availability=robot_cell_availability,
+        )
+        if robot_pick_event is not None:
+            timing = _retime_path_timing_for_robot_pick(
+                config=config,
+                route=material_route,
+                timing=timing,
+                robot_pick_event=robot_pick_event,
+            )
         station_name = material_route.station_name
         if station_name is not None:
             station = next((value for value in config.stations if value.name == station_name), None)
@@ -307,10 +381,13 @@ def _build_recycling_lifecycle(
                         station_name=station.name,
                         station_type=station.station_type,
                         enter_time=enter_time,
-                        decision="captured" if material_route.drop_zone_id is not None else "continued_on_mainline",
+                        decision=(
+                            "robot_picked"
+                            if robot_pick_event is not None
+                            else ("captured" if material_route.drop_zone_id is not None else "continued_on_mainline")
+                        ),
                     )
                 )
-        timing = _build_path_timing(config, material_route, spawn_event.spawn_time)
         for node_id, timestamp in timing["node_times"].items():
             node = topology["nodes"][node_id]
             node_events.append(
@@ -331,7 +408,17 @@ def _build_recycling_lifecycle(
                     exit_time=window[1],
                 )
             )
-        lifecycle.extend(_route_lifecycle_events(config, material_route, machine_events, node_events, spec))
+        lifecycle.extend(
+            _route_lifecycle_events(
+                config,
+                material_route,
+                machine_events,
+                node_events,
+                spec,
+                perception_events=perception_events,
+                robot_pick_event=robot_pick_event,
+            )
+        )
         final_status = material_route.final_status
         item_lifecycle = ItemLifecycle(
             item_id=spawn_event.item_id,
@@ -347,6 +434,8 @@ def _build_recycling_lifecycle(
             path_segments=path_segments,
             node_events=node_events,
             machine_events=machine_events,
+            perception_events=perception_events,
+            robot_pick_event=robot_pick_event,
             drop_zone_id=material_route.drop_zone_id,
             outbound_zone_id=material_route.outbound_zone_id,
         )
@@ -439,15 +528,17 @@ def _build_recycling_lifecycle(
         commodity_target=spec.commodity_target,
         source_id=source_id,
         spawn=spawn_event,
-        route=route,
-        lifecycle=lifecycle,
-        final_status=final_status,
-        path_segments=path_segments,
-        node_events=node_events,
-        machine_events=machine_events,
-        drop_zone_id=None,
-        outbound_zone_id=None,
-    )
+            route=route,
+            lifecycle=lifecycle,
+            final_status=final_status,
+            path_segments=path_segments,
+            node_events=node_events,
+            machine_events=machine_events,
+            perception_events=perception_events,
+            robot_pick_event=robot_pick_event,
+            drop_zone_id=None,
+            outbound_zone_id=None,
+        )
     material_unit = MaterialUnit(
         unit_id=unit_id,
         item_type=spawn_event.item_type,
@@ -472,10 +563,23 @@ def _route_lifecycle_events(
     machine_events: list[MachineEvent],
     node_events: list[RoutingNodeEvent],
     spec: ItemSpec,
+    perception_events: list[PerceptionEvent],
+    robot_pick_event: RobotPickEvent | None,
 ) -> list[LifecycleStageEvent]:
     recycling_route = config.system.stream_routes["recycling"]
     residual_facility = recycling_route.residual_facility_id or recycling_route.initial_facility_id
     events: list[LifecycleStageEvent] = []
+
+    for perception_event in perception_events:
+        classified_as = perception_event.predicted_commodity or perception_event.predicted_material_class
+        events.append(
+            LifecycleStageEvent(
+                "cv_detected",
+                perception_event.timestamp,
+                recycling_route.initial_facility_id,
+                f"classified_as_{classified_as}",
+            )
+        )
 
     for machine_event in machine_events:
         stage_name = {
@@ -509,8 +613,38 @@ def _route_lifecycle_events(
         )
         return events
 
+    if robot_pick_event is not None:
+        events.extend(
+            [
+                LifecycleStageEvent(
+                    "robot_picked",
+                    robot_pick_event.pick_end_time,
+                    recycling_route.initial_facility_id,
+                    f"picked_by_{robot_pick_event.robot_cell_id}",
+                ),
+                LifecycleStageEvent(
+                    "robot_placed",
+                    robot_pick_event.place_time,
+                    recycling_route.initial_facility_id,
+                    (
+                        f"placed_to_{robot_pick_event.place_segment_id}"
+                        if robot_pick_event.place_segment_id is not None
+                        else f"placed_to_{robot_pick_event.place_drop_zone_id}"
+                    ),
+                ),
+            ]
+        )
+
     commodity = spec.commodity_target or material_route.id
-    bunker_time = node_events[-1].timestamp if node_events else (machine_events[-1].exit_time if machine_events else 0.1)
+    bunker_time = (
+        robot_pick_event.place_time
+        if robot_pick_event is not None
+        else (
+            node_events[-1].timestamp
+            if node_events
+            else (machine_events[-1].exit_time if machine_events else 0.1)
+        )
+    )
     events.extend(
         [
             LifecycleStageEvent(
@@ -531,6 +665,182 @@ def _route_lifecycle_events(
         ]
     )
     return events
+
+
+def _matches_target_spec(
+    *,
+    target_materials: tuple[str, ...],
+    target_commodities: tuple[str, ...],
+    spec: ItemSpec,
+) -> bool:
+    material_match = not target_materials or spec.material_class in target_materials
+    commodity_match = not target_commodities or spec.commodity_target in target_commodities
+    return material_match and commodity_match
+
+
+def _build_perception_events(
+    config: SimulationConfig,
+    spec: ItemSpec,
+    spawn_event: SpawnEvent,
+    material_route: MaterialRouteConfig,
+    timing: dict[str, object],
+) -> list[PerceptionEvent]:
+    segment_windows = timing["segment_time_windows"]
+    route_segment_ids = set(material_route.segment_ids)
+    events: list[PerceptionEvent] = []
+    for zone in config.perception_zones:
+        if zone.segment_id not in route_segment_ids:
+            continue
+        if not _matches_target_spec(
+            target_materials=zone.target_materials,
+            target_commodities=zone.target_commodities,
+            spec=spec,
+        ):
+            continue
+        segment = next(segment for segment in config.conveyor_segments if segment.id == zone.segment_id)
+        segment_start, _segment_end = segment_windows[zone.segment_id]
+        zone_midpoint = (zone.distance_range[0] + zone.distance_range[1]) / 2
+        timestamp = round(segment_start + zone_midpoint / segment.belt_speed, 4)
+        events.append(
+            PerceptionEvent(
+                zone_id=zone.id,
+                sensor_type=zone.sensor_type,
+                segment_id=zone.segment_id,
+                timestamp=timestamp,
+                item_id=spawn_event.item_id,
+                predicted_material_class=spec.material_class,
+                predicted_commodity=spec.commodity_target,
+                confidence=round(_perception_confidence(spec), 3),
+                model_name=zone.model_name,
+            )
+        )
+    return events
+
+
+def _build_robot_pick_event(
+    config: SimulationConfig,
+    spec: ItemSpec,
+    spawn_event: SpawnEvent,
+    material_route: MaterialRouteConfig,
+    timing: dict[str, object],
+    perception_events: list[PerceptionEvent],
+    robot_cell_availability: dict[str, float],
+) -> RobotPickEvent | None:
+    if spec.commodity_target is None:
+        return None
+
+    segment_windows = timing["segment_time_windows"]
+    candidate_cells = [
+        cell
+        for cell in config.robot_cells
+        if cell.source_segment_id in material_route.segment_ids and spec.commodity_target in cell.target_commodities
+    ]
+    if not candidate_cells:
+        return None
+
+    cell = candidate_cells[0]
+    segment = next(segment for segment in config.conveyor_segments if segment.id == cell.source_segment_id)
+    segment_start, segment_end = segment_windows[cell.source_segment_id]
+    ideal_pick_start = round(segment_start + cell.pick_distance / segment.belt_speed, 4)
+    detect_time = perception_events[-1].timestamp if perception_events else None
+    pick_start_time = max(ideal_pick_start, robot_cell_availability.get(cell.id, 0.0))
+    if detect_time is not None:
+        pick_start_time = max(pick_start_time, round(detect_time + 0.05, 4))
+    if pick_start_time > segment_end:
+        return None
+    pick_end_time = round(pick_start_time + cell.pick_duration, 4)
+    place_time = round(pick_end_time + cell.place_duration, 4)
+    robot_cell_availability[cell.id] = round(place_time + cell.cooldown, 4)
+    return RobotPickEvent(
+        item_id=spawn_event.item_id,
+        robot_cell_id=cell.id,
+        robot_type=cell.robot_type,
+        source_segment_id=cell.source_segment_id,
+        pick_distance=cell.pick_distance,
+        place_drop_zone_id=cell.place_drop_zone_id,
+        place_segment_id=cell.place_segment_id,
+        place_distance=cell.place_distance,
+        commodity_target=spec.commodity_target,
+        controller=cell.controller,
+        detect_time=detect_time,
+        pick_start_time=pick_start_time,
+        pick_end_time=pick_end_time,
+        place_time=place_time,
+        outcome="picked",
+    )
+
+
+def _retime_path_timing_for_robot_pick(
+    config: SimulationConfig,
+    route: MaterialRouteConfig,
+    timing: dict[str, object],
+    robot_pick_event: RobotPickEvent,
+) -> dict[str, object]:
+    if robot_pick_event.place_segment_id is None or robot_pick_event.place_segment_id not in route.segment_ids:
+        return timing
+
+    segment_map = {segment.id: segment for segment in config.conveyor_segments}
+    node_map = {node.id: node for node in config.routing_nodes}
+    machine_map = {machine.id: machine for machine in config.machine_zones}
+    segment_end_times = dict(timing["segment_end_times"])
+    segment_time_windows = dict(timing["segment_time_windows"])
+
+    start_index = route.segment_ids.index(robot_pick_event.place_segment_id)
+    placement_segment = segment_map[robot_pick_event.place_segment_id]
+    current = round(
+        robot_pick_event.place_time - robot_pick_event.place_distance / max(placement_segment.belt_speed, 1e-6),
+        4,
+    )
+    for segment_id in route.segment_ids[start_index:]:
+        segment = segment_map[segment_id]
+        segment_start = round(current, 4)
+        current = round(current + segment.length / max(segment.belt_speed, 1e-6), 4)
+        segment_end_times[segment_id] = current
+        segment_time_windows[segment_id] = (segment_start, current)
+
+    node_times: dict[str, float] = {}
+    for node_id in route.node_ids:
+        node = node_map[node_id]
+        upstream_times = [
+            segment_end_times[segment_id]
+            for segment_id in node.upstream_segment_ids
+            if segment_id in segment_end_times
+        ]
+        node_times[node_id] = round(max(upstream_times) if upstream_times else robot_pick_event.place_time, 4)
+
+    machine_windows: dict[str, tuple[float, float]] = {}
+    for machine_id in route.machine_ids:
+        machine = machine_map[machine_id]
+        input_times = [
+            segment_end_times[segment_id]
+            for segment_id in machine.input_segment_ids
+            if segment_id in segment_end_times
+        ]
+        output_times = [
+            segment_end_times[segment_id]
+            for segment_id in machine.output_segment_ids
+            if segment_id in segment_end_times
+        ]
+        enter_time = round(min(input_times) if input_times else robot_pick_event.place_time, 4)
+        exit_time = round(max(output_times) if output_times else enter_time + 0.05, 4)
+        machine_windows[machine_id] = (enter_time, exit_time)
+
+    return {
+        "segment_end_times": segment_end_times,
+        "segment_time_windows": segment_time_windows,
+        "node_times": node_times,
+        "machine_windows": machine_windows,
+        "path_end_time": round(segment_end_times[route.segment_ids[-1]], 4),
+    }
+
+
+def _perception_confidence(spec: ItemSpec) -> float:
+    confidence = 0.93
+    if spec.material_class == "plastic":
+        confidence = 0.95
+    if spec.visual_profile == "bag":
+        confidence -= 0.04
+    return max(0.7, min(confidence, 0.99))
 
 
 def _recycling_capture_outcome(
@@ -799,10 +1109,13 @@ def _build_path_timing(config: SimulationConfig, route: MaterialRouteConfig, sta
     machine_map = {machine.id: machine for machine in config.machine_zones}
     current = start_time
     segment_end_times: dict[str, float] = {}
+    segment_time_windows: dict[str, tuple[float, float]] = {}
     for segment_id in route.segment_ids:
         segment = segment_map[segment_id]
+        segment_start = round(current, 4)
         current = round(current + segment.length / segment.belt_speed, 4)
         segment_end_times[segment_id] = current
+        segment_time_windows[segment_id] = (segment_start, current)
 
     node_times: dict[str, float] = {}
     for node_id in route.node_ids:
@@ -829,6 +1142,7 @@ def _build_path_timing(config: SimulationConfig, route: MaterialRouteConfig, sta
 
     return {
         "segment_end_times": segment_end_times,
+        "segment_time_windows": segment_time_windows,
         "node_times": node_times,
         "machine_windows": machine_windows,
         "path_end_time": round(segment_end_times[route.segment_ids[-1]], 4),

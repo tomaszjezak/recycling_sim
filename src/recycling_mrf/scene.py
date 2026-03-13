@@ -45,6 +45,20 @@ class CameraPose:
 
 
 @dataclass(frozen=True)
+class PerceptionZone:
+    id: str
+    sensor_type: str
+    segment_id: str
+    distance_range: tuple[float, float]
+    position: tuple[float, float, float]
+    look_at: tuple[float, float, float]
+    resolution: tuple[int, int]
+    target_materials: tuple[str, ...]
+    target_commodities: tuple[str, ...]
+    model_name: str
+
+
+@dataclass(frozen=True)
 class EnvironmentLayout:
     mode: str
     environment_id: str
@@ -61,13 +75,16 @@ class SceneDefinition:
     spawn_zone: SpawnZone
     stations: tuple[StationZone, ...]
     camera: CameraPose
+    perception_zones: tuple[PerceptionZone, ...]
     environment: EnvironmentLayout
     segments: tuple[dict, ...]
     nodes: tuple[dict, ...]
     machines: tuple[dict, ...]
+    robot_cells: tuple[dict, ...]
     platforms: tuple[dict, ...]
     spawn_points: tuple[dict, ...]
     drop_zones: tuple[dict, ...]
+    visual_blocks: tuple[dict, ...]
     subareas: tuple[str, ...]
 
     def to_dict(self) -> dict:
@@ -100,6 +117,21 @@ class SceneDefinition:
                 "look_at": self.camera.look_at,
                 "resolution": self.camera.resolution,
             },
+            "perception_zones": [
+                {
+                    "id": zone.id,
+                    "sensor_type": zone.sensor_type,
+                    "segment_id": zone.segment_id,
+                    "distance_range": zone.distance_range,
+                    "position": zone.position,
+                    "look_at": zone.look_at,
+                    "resolution": zone.resolution,
+                    "target_materials": zone.target_materials,
+                    "target_commodities": zone.target_commodities,
+                    "model_name": zone.model_name,
+                }
+                for zone in self.perception_zones
+            ],
             "environment": {
                 "mode": self.environment.mode,
                 "environment_id": self.environment.environment_id,
@@ -112,9 +144,11 @@ class SceneDefinition:
             "segments": list(self.segments),
             "nodes": list(self.nodes),
             "machines": list(self.machines),
+            "robot_cells": list(self.robot_cells),
             "platforms": list(self.platforms),
             "spawn_points": list(self.spawn_points),
             "drop_zones": list(self.drop_zones),
+            "visual_blocks": list(self.visual_blocks),
             "subareas": list(self.subareas),
         }
 
@@ -151,6 +185,21 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
         position=config.camera.position,
         look_at=config.camera.look_at,
         resolution=config.camera.resolution,
+    )
+    perception_zones = tuple(
+        PerceptionZone(
+            id=zone.id,
+            sensor_type=zone.sensor_type,
+            segment_id=zone.segment_id,
+            distance_range=zone.distance_range,
+            position=zone.position,
+            look_at=zone.look_at,
+            resolution=zone.resolution,
+            target_materials=zone.target_materials,
+            target_commodities=zone.target_commodities,
+            model_name=zone.model_name,
+        )
+        for zone in config.perception_zones
     )
     environment = EnvironmentLayout(
         mode=config.environment.mode,
@@ -288,6 +337,25 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
         }
         for machine in config.machine_zones
     )
+    robot_cells = tuple(
+        {
+            "id": cell.id,
+            "robot_type": cell.robot_type,
+            "base_pose": {"position": cell.base_pose.position, "yaw_deg": cell.base_pose.yaw_deg},
+            "source_segment_id": cell.source_segment_id,
+            "pick_distance": cell.pick_distance,
+            "place_drop_zone_id": cell.place_drop_zone_id,
+            "place_segment_id": cell.place_segment_id,
+            "place_distance": cell.place_distance,
+            "target_commodities": list(cell.target_commodities),
+            "perception_zone_id": cell.perception_zone_id,
+            "controller": cell.controller,
+            "pick_duration": cell.pick_duration,
+            "place_duration": cell.place_duration,
+            "cooldown": cell.cooldown,
+        }
+        for cell in config.robot_cells
+    )
     platforms = tuple(
         {
             "id": platform.id,
@@ -321,17 +389,30 @@ def build_scene_definition(config: SimulationConfig) -> SceneDefinition:
         }
         for zone in config.drop_zones
     )
+    visual_blocks = tuple(
+        {
+            "id": block.id,
+            "shape": block.shape,
+            "pose": {"position": block.pose.position, "yaw_deg": block.pose.yaw_deg},
+            "size": block.size,
+            "color": block.color,
+        }
+        for block in config.mrf.visual_blocks
+    )
     return SceneDefinition(
         belt_bounds=belt_bounds,
         spawn_zone=spawn_zone,
         stations=stations,
         camera=camera,
+        perception_zones=perception_zones,
         environment=environment,
         segments=segments,
         nodes=nodes,
         machines=machines,
+        robot_cells=robot_cells,
         platforms=platforms,
         spawn_points=spawn_points,
         drop_zones=drop_zones,
+        visual_blocks=visual_blocks,
         subareas=config.subareas,
     )

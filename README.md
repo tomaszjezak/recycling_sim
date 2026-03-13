@@ -68,6 +68,12 @@ To open Isaac Sim in the recommended stable warehouse overview:
 ./scripts/run_conveyor_isaac.sh --config configs/conveyor_demo.json --viewport overview
 ```
 
+To view the full large-facility scene with plastic detections and robot takeouts:
+
+```bash
+./scripts/run_conveyor_isaac.sh --config configs/recycling_facility_large_v2.json --viewport overview --detections
+```
+
 To launch the belt-focused `edco_conveyor_segment_a` mini-scene:
 
 ```bash
@@ -133,4 +139,5 @@ See `data/edco_conveyor_segment_a_anchor.md`.
 - Capture areas are side zones, not downstream branch conveyors.
 - Physics still uses simple box/cylinder proxies, but visuals are dressed with bottle/can/carton/bag details.
 - Interactive sensor-camera viewing is intentionally deferred; use the stable overview interactively and `--headless` for camera output.
-- No robot and no segmentation labels yet.
+- The large `recycling_facility_large_v2` scene now includes scripted CV detections and robot pick arms for PET, HDPE, and plastic film.
+- Learned robot policy loading is not wired in yet; robot cells currently use the scripted pick controller path.

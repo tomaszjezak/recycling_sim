@@ -63,7 +63,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertIn("facility_catalog", plan_dict)
         self.assertIn("summaries", plan_dict)
         self.assertIn("stations", plan.facility)
-        self.assertEqual(plan.facility["environment"]["layout_preset"], "full_mrf")
+        self.assertEqual(plan.facility["environment"]["layout_preset"], "edco_conveyor_segment_a")
         self.assertAlmostEqual(sum(plan.item_mix.values()), 1.0)
 
     def test_every_material_unit_has_terminal_disposition(self) -> None:
@@ -78,7 +78,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(plan.events)
         self.assertTrue(all(event.stream == "recycling" for event in plan.events))
         non_recycling = [unit for unit in plan.material_units if unit.stream != "recycling"]
-        self.assertTrue(non_recycling)
+        self.assertEqual(non_recycling, [])
 
     def test_recycling_units_include_required_upstream_stages(self) -> None:
         config = SimulationConfig.from_file("configs/conveyor_demo.json")
@@ -97,7 +97,8 @@ class ScenarioTests(unittest.TestCase):
 
     def test_ferrous_items_route_to_magnet_then_end_market(self) -> None:
         config = SimulationConfig.from_file("configs/conveyor_demo.json")
-        plan = generate_episode_plan(config)
+        ferrous_only = replace(config, system=replace(config.system, item_mix={"steel_can": 1.0}))
+        plan = generate_episode_plan(ferrous_only)
         steel_routes = [lifecycle for lifecycle in plan.item_lifecycles if lifecycle.item_type == "steel_can"]
         self.assertTrue(steel_routes)
         for lifecycle in steel_routes:
@@ -113,20 +114,27 @@ class ScenarioTests(unittest.TestCase):
 
     def test_residue_is_removed_before_downstream_stations(self) -> None:
         config = SimulationConfig.from_file("configs/conveyor_demo.json")
-        plan = generate_episode_plan(config)
+        residue_only = replace(config, system=replace(config.system, item_mix={"residue": 1.0}))
+        plan = generate_episode_plan(residue_only)
         residue_routes = [lifecycle for lifecycle in plan.item_lifecycles if lifecycle.item_type == "residue"]
         self.assertTrue(residue_routes)
         for lifecycle in residue_routes:
-            self.assertEqual(lifecycle.route[-1].station_name, "presort")
+            self.assertEqual(lifecycle.route[-1].station_name, "manual_qc")
             self.assertEqual(lifecycle.final_status, "residual_disposed")
 
     def test_targeted_plastics_and_nonferrous_are_recovered_downstream(self) -> None:
         config = SimulationConfig.from_file("configs/conveyor_demo.json")
-        plan = generate_episode_plan(config)
+        targeted_only = replace(
+            config,
+            system=replace(
+                config.system,
+                item_mix={"pet_bottle": 0.4, "milk_carton": 0.3, "aluminum_can": 0.3},
+            ),
+        )
+        plan = generate_episode_plan(targeted_only)
         targets = {
             "pet_bottle": "container_optics",
-            "hdpe_container": "container_optics",
-            "detergent_jug": "container_optics",
+            "milk_carton": "container_optics",
             "aluminum_can": "manual_qc",
         }
         for item_type, station_name in targets.items():
@@ -152,7 +160,8 @@ class ScenarioTests(unittest.TestCase):
         plan = runner._generate_plan(cycle_index=1)
         self.assertTrue(plan.events)
         self.assertTrue(all(event.item_id.startswith("cycle_0001_") for event in plan.events))
-        self.assertTrue(all(lifecycle.final_status == "residual_disposed" for lifecycle in plan.item_lifecycles))
+        statuses = {lifecycle.final_status for lifecycle in plan.item_lifecycles}
+        self.assertEqual(statuses, {"mainline_exit"})
 
     def test_dense_topology_scene_exports_surface_path_metadata(self) -> None:
         config = SimulationConfig.from_file("configs/dense_mrf_process_line.json")
@@ -206,7 +215,19 @@ class ScenarioTests(unittest.TestCase):
         self.assertGreaterEqual(len(plan.facility["machines"]), 8)
         self.assertGreaterEqual(len(plan.facility["platforms"]), 4)
         self.assertGreaterEqual(len(plan.facility["drop_zones"]), 6)
+        self.assertGreaterEqual(len(plan.facility["visual_blocks"]), 20)
         self.assertIn("E. Bunker, reject, and outbound staging", plan.facility["subareas"])
+
+    def test_large_v2_topology_pose_stays_on_spawn_segment_centerline(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        plan = generate_episode_plan(config)
+        runner = IsaacConveyorRunner(config, headless=True)
+        lifecycle = plan.item_lifecycles[0]
+        position, _yaw_deg, done = runner._path_pose_for_lifecycle(plan, lifecycle, lifecycle.spawn.spawn_time)
+        spawn_segment = next(segment for segment in plan.facility["segments"] if segment["id"] == lifecycle.spawn.spawn_segment_id)
+        expected_y = spawn_segment["start_pose"]["position"][1]
+        self.assertAlmostEqual(position[1], expected_y, places=3)
+        self.assertFalse(done)
 
     def test_large_v2_runner_uses_topology_layout_dispatch(self) -> None:
         config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
@@ -227,16 +248,126 @@ class ScenarioTests(unittest.TestCase):
         config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
         pet_route = resolve_material_route(config, config.item_catalog["pet_bottle"])
         hdpe_route = resolve_material_route(config, config.item_catalog["hdpe_jug"])
+        film_route = resolve_material_route(config, config.item_catalog["plastic_film"])
         ferrous_route = resolve_material_route(config, config.item_catalog["steel_can"])
         nonferrous_route = resolve_material_route(config, config.item_catalog["aluminum_can"])
         glass_route = resolve_material_route(config, config.item_catalog["glass_bottle"])
         residue_route = resolve_material_route(config, config.item_catalog["residue"])
+        self.assertEqual(pet_route.drop_zone_id, "dz_pet_staging")
+        self.assertEqual(hdpe_route.drop_zone_id, "dz_hdpe_staging")
+        self.assertEqual(film_route.drop_zone_id, "dz_film_staging")
         self.assertIn("s10_pet_branch", pet_route.segment_ids)
+        self.assertIn("s24_pet_staging_line", pet_route.segment_ids)
         self.assertIn("s11_hdpe_branch", hdpe_route.segment_ids)
+        self.assertIn("s25_hdpe_staging_line", hdpe_route.segment_ids)
+        self.assertIn("s23_film_branch", film_route.segment_ids)
         self.assertEqual(ferrous_route.drop_zone_id, "dz_ferrous_bunker")
         self.assertEqual(nonferrous_route.outbound_zone_id, "dz_outbound_staging")
         self.assertEqual(glass_route.drop_zone_id, "dz_glass_bunker")
         self.assertEqual(residue_route.final_status, "residual_disposed")
+
+    def test_large_v2_generates_cv_and_robot_pick_events_for_target_plastics(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        plastic_only = replace(
+            config,
+            system=replace(
+                config.system,
+                item_mix={"pet_bottle": 0.34, "hdpe_jug": 0.33, "plastic_film": 0.33},
+            ),
+        )
+        plan = generate_episode_plan(plastic_only)
+        self.assertEqual(
+            {event.predicted_commodity for event in plan.perception_events},
+            {"pet", "hdpe", "plastic_film"},
+        )
+        self.assertEqual(
+            {event.commodity_target for event in plan.robot_pick_events},
+            {"pet", "hdpe", "plastic_film"},
+        )
+        self.assertEqual(
+            {event.place_segment_id for event in plan.robot_pick_events},
+            {"s10_pet_branch", "s11_hdpe_branch", "s23_film_branch"},
+        )
+        for lifecycle in plan.item_lifecycles:
+            self.assertTrue(lifecycle.perception_events)
+            if lifecycle.robot_pick_event is None:
+                continue
+            self.assertLessEqual(
+                lifecycle.perception_events[-1].timestamp,
+                lifecycle.robot_pick_event.pick_start_time,
+            )
+            self.assertLessEqual(
+                lifecycle.robot_pick_event.pick_end_time,
+                lifecycle.robot_pick_event.place_time,
+            )
+
+    def test_large_v2_robot_place_pose_lands_on_branch_stream(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        plastic_only = replace(
+            config,
+            system=replace(
+                config.system,
+                item_mix={"pet_bottle": 0.34, "hdpe_jug": 0.33, "plastic_film": 0.33},
+            ),
+        )
+        plan = generate_episode_plan(plastic_only)
+        runner = IsaacConveyorRunner(plastic_only, headless=True)
+        lifecycle = next(
+            value
+            for value in plan.item_lifecycles
+            if value.item_type == "plastic_film" and value.robot_pick_event is not None
+        )
+        robot_pick_event = lifecycle.robot_pick_event
+        self.assertIsNotNone(robot_pick_event)
+        position, _yaw_deg, done = runner._path_pose_for_lifecycle(
+            plan,
+            lifecycle,
+            robot_pick_event.place_time + 0.01,
+        )
+        branch = next(
+            segment for segment in plan.facility["segments"]
+            if segment["id"] == robot_pick_event.place_segment_id
+        )
+        self.assertFalse(done)
+        self.assertGreater(position[0], branch["start_pose"]["position"][0])
+        self.assertLess(position[0], branch["end_pose"]["position"][0] + 0.5)
+
+    def test_large_v2_robot_sorted_plastics_finish_in_their_drop_zones(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        plastic_only = replace(
+            config,
+            system=replace(
+                config.system,
+                item_mix={"pet_bottle": 0.34, "hdpe_jug": 0.33, "plastic_film": 0.33},
+            ),
+        )
+        plan = generate_episode_plan(plastic_only)
+        runner = IsaacConveyorRunner(plastic_only, headless=True)
+        lifecycle = next(
+            value
+            for value in plan.item_lifecycles
+            if value.item_type == "plastic_film" and value.robot_pick_event is not None
+        )
+        position, _yaw_deg, done = runner._path_pose_for_lifecycle(
+            plan,
+            lifecycle,
+            lifecycle.node_events[-1].timestamp + 0.01,
+        )
+        drop_zone = next(
+            zone for zone in plan.facility["drop_zones"]
+            if zone["id"] == lifecycle.drop_zone_id
+        )
+        self.assertTrue(done)
+        self.assertAlmostEqual(position[0], drop_zone["pose"]["position"][0], places=3)
+        self.assertAlmostEqual(position[1], drop_zone["pose"]["position"][1], places=3)
+
+    def test_large_v2_cardboard_stays_off_robot_pick_streams(self) -> None:
+        config = SimulationConfig.from_file("configs/recycling_facility_large_v2.json")
+        cardboard_only = replace(config, system=replace(config.system, item_mix={"cardboard": 1.0}))
+        plan = generate_episode_plan(cardboard_only)
+        self.assertTrue(plan.item_lifecycles)
+        self.assertTrue(all(lifecycle.robot_pick_event is None for lifecycle in plan.item_lifecycles))
+        self.assertTrue(all("s9_optical_sort_line" not in lifecycle.path_segments for lifecycle in plan.item_lifecycles))
 
 
 if __name__ == "__main__":

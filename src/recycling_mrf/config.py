@@ -46,6 +46,20 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class PerceptionZoneConfig:
+    id: str
+    sensor_type: str
+    segment_id: str
+    distance_range: tuple[float, float]
+    position: tuple[float, float, float]
+    look_at: tuple[float, float, float]
+    resolution: tuple[int, int]
+    target_materials: tuple[str, ...]
+    target_commodities: tuple[str, ...]
+    model_name: str = "scripted_classifier"
+
+
+@dataclass(frozen=True)
 class TransformConfig:
     position: tuple[float, float, float]
     yaw_deg: float
@@ -118,6 +132,24 @@ class MachineZoneConfig:
 
 
 @dataclass(frozen=True)
+class RobotCellConfig:
+    id: str
+    robot_type: str
+    base_pose: PoseConfig
+    source_segment_id: str
+    pick_distance: float
+    place_drop_zone_id: str
+    target_commodities: tuple[str, ...]
+    place_segment_id: str | None = None
+    place_distance: float = 0.0
+    perception_zone_id: str | None = None
+    controller: str = "scripted"
+    pick_duration: float = 0.6
+    place_duration: float = 0.5
+    cooldown: float = 0.25
+
+
+@dataclass(frozen=True)
 class PlatformConfig:
     id: str
     pose: PoseConfig
@@ -135,6 +167,15 @@ class DropZoneConfig:
     zone_type: str
     pose: PoseConfig
     size: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class VisualBlockConfig:
+    id: str
+    shape: str
+    pose: PoseConfig
+    size: tuple[float, float, float]
+    color: tuple[float, float, float]
 
 
 @dataclass(frozen=True)
@@ -231,12 +272,15 @@ class MRFConfig:
     camera: CameraConfig
     environment: EnvironmentConfig
     stations: tuple[StationConfig, ...]
+    perception_zones: tuple[PerceptionZoneConfig, ...] = ()
     conveyor_segments: tuple[ConveyorSegmentConfig, ...] = ()
     routing_nodes: tuple[RoutingNodeConfig, ...] = ()
     machine_zones: tuple[MachineZoneConfig, ...] = ()
+    robot_cells: tuple[RobotCellConfig, ...] = ()
     platforms: tuple[PlatformConfig, ...] = ()
     material_routes: tuple[MaterialRouteConfig, ...] = ()
     drop_zones: tuple[DropZoneConfig, ...] = ()
+    visual_blocks: tuple[VisualBlockConfig, ...] = ()
     spawn_segment_id: str | None = None
     subareas: tuple[str, ...] = ()
 
@@ -381,6 +425,21 @@ class SimulationConfig:
                     )
                     for station in mrf.get("stations", [])
                 ),
+                perception_zones=tuple(
+                    PerceptionZoneConfig(
+                        id=str(zone["id"]),
+                        sensor_type=str(zone.get("sensor_type", "rgb_camera")),
+                        segment_id=str(zone["segment_id"]),
+                        distance_range=tuple(float(v) for v in zone["distance_range"]),
+                        position=tuple(float(v) for v in zone["position"]),
+                        look_at=tuple(float(v) for v in zone["look_at"]),
+                        resolution=tuple(int(v) for v in zone.get("resolution", [640, 360])),
+                        target_materials=tuple(str(v) for v in zone.get("target_materials", [])),
+                        target_commodities=tuple(str(v) for v in zone.get("target_commodities", [])),
+                        model_name=str(zone.get("model_name", "scripted_classifier")),
+                    )
+                    for zone in mrf.get("perception_zones", [])
+                ),
                 conveyor_segments=tuple(
                     ConveyorSegmentConfig(
                         id=str(segment["id"]),
@@ -438,6 +497,33 @@ class SimulationConfig:
                     )
                     for zone in mrf.get("machine_zones", [])
                 ),
+                robot_cells=tuple(
+                    RobotCellConfig(
+                        id=str(cell["id"]),
+                        robot_type=str(cell.get("robot_type", "xarm6")),
+                        base_pose=_parse_pose(cell["base_pose"]),
+                        source_segment_id=str(cell["source_segment_id"]),
+                        pick_distance=float(cell["pick_distance"]),
+                        place_drop_zone_id=str(cell["place_drop_zone_id"]),
+                        place_segment_id=(
+                            str(cell["place_segment_id"])
+                            if cell.get("place_segment_id") is not None
+                            else None
+                        ),
+                        place_distance=float(cell.get("place_distance", 0.0)),
+                        target_commodities=tuple(str(v) for v in cell.get("target_commodities", [])),
+                        perception_zone_id=(
+                            str(cell["perception_zone_id"])
+                            if cell.get("perception_zone_id") is not None
+                            else None
+                        ),
+                        controller=str(cell.get("controller", "scripted")),
+                        pick_duration=float(cell.get("pick_duration", 0.6)),
+                        place_duration=float(cell.get("place_duration", 0.5)),
+                        cooldown=float(cell.get("cooldown", 0.25)),
+                    )
+                    for cell in mrf.get("robot_cells", [])
+                ),
                 platforms=tuple(
                     PlatformConfig(
                         id=str(platform["id"]),
@@ -486,6 +572,16 @@ class SimulationConfig:
                         size=tuple(float(v) for v in zone["size"]),
                     )
                     for zone in mrf.get("drop_zones", [])
+                ),
+                visual_blocks=tuple(
+                    VisualBlockConfig(
+                        id=str(block["id"]),
+                        shape=str(block.get("shape", "cube")),
+                        pose=_parse_pose(block["pose"]),
+                        size=tuple(float(v) for v in block["size"]),
+                        color=tuple(float(v) for v in block.get("color", [0.7, 0.7, 0.7])),
+                    )
+                    for block in mrf.get("visual_blocks", [])
                 ),
                 spawn_segment_id=(
                     str(mrf["spawn_segment_id"])
@@ -673,6 +769,16 @@ class SimulationConfig:
         drop_zone_ids = {zone.id for zone in self.drop_zones}
         if len(drop_zone_ids) != len(self.drop_zones):
             raise ValueError("mrf.drop_zones ids must be unique")
+        visual_block_ids = {block.id for block in self.mrf.visual_blocks}
+        if len(visual_block_ids) != len(self.mrf.visual_blocks):
+            raise ValueError("mrf.visual_blocks ids must be unique")
+        for block in self.mrf.visual_blocks:
+            if block.shape not in {"cube", "cylinder", "sphere"}:
+                raise ValueError(f"unsupported visual block shape: {block.shape}")
+            if len(block.size) != 3 or any(value <= 0 for value in block.size):
+                raise ValueError(f"visual block {block.id} must have positive 3D size")
+            if len(block.color) != 3 or any(value < 0 or value > 1 for value in block.color):
+                raise ValueError(f"visual block {block.id} color values must be between 0 and 1")
 
         node_ids = {node.id for node in self.routing_nodes}
         if len(node_ids) != len(self.routing_nodes):
@@ -700,6 +806,34 @@ class SimulationConfig:
                 for downstream in node.downstream_segment_ids:
                     adjacency[upstream].add(downstream)
 
+        perception_zone_ids = {zone.id for zone in self.perception_zones}
+        if len(perception_zone_ids) != len(self.perception_zones):
+            raise ValueError("mrf.perception_zones ids must be unique")
+        for zone in self.perception_zones:
+            if zone.sensor_type not in self.supported_perception_sensor_types:
+                raise ValueError(f"unsupported perception sensor_type for {zone.id}: {zone.sensor_type}")
+            if zone.segment_id not in segment_ids:
+                raise ValueError(f"perception zone {zone.id} references unknown segment: {zone.segment_id}")
+            if len(zone.distance_range) != 2 or zone.distance_range[0] >= zone.distance_range[1]:
+                raise ValueError(f"perception zone {zone.id} must define an increasing distance_range")
+            segment = next(segment for segment in self.conveyor_segments if segment.id == zone.segment_id)
+            if zone.distance_range[0] < 0 or zone.distance_range[1] > segment.length:
+                raise ValueError(f"perception zone {zone.id} distance_range must stay within source segment length")
+            if len(zone.position) != 3 or len(zone.look_at) != 3:
+                raise ValueError(f"perception zone {zone.id} must define 3D position and look_at")
+            if len(zone.resolution) != 2 or any(value <= 0 for value in zone.resolution):
+                raise ValueError(f"perception zone {zone.id} resolution must be positive")
+            unknown_materials = [
+                material for material in zone.target_materials if material not in self.known_material_classes
+            ]
+            if unknown_materials:
+                raise ValueError(f"perception zone {zone.id} references unknown target materials: {unknown_materials}")
+            unknown_commodities = [
+                commodity for commodity in zone.target_commodities if commodity not in self.system.commodity_end_markets
+            ]
+            if unknown_commodities:
+                raise ValueError(f"perception zone {zone.id} references unknown target commodities: {unknown_commodities}")
+
         machine_ids = {machine.id for machine in self.machine_zones}
         if len(machine_ids) != len(self.machine_zones):
             raise ValueError("mrf.machine_zones ids must be unique")
@@ -716,6 +850,47 @@ class SimulationConfig:
                 end_anchors[segment_id].add(f"machine:{machine.id}:input")
             for segment_id in machine.output_segment_ids:
                 start_anchors[segment_id].add(f"machine:{machine.id}:output")
+
+        robot_cell_ids = {cell.id for cell in self.robot_cells}
+        if len(robot_cell_ids) != len(self.robot_cells):
+            raise ValueError("mrf.robot_cells ids must be unique")
+        for cell in self.robot_cells:
+            if cell.robot_type not in self.supported_robot_types:
+                raise ValueError(f"unsupported robot_type for {cell.id}: {cell.robot_type}")
+            if cell.source_segment_id not in segment_ids:
+                raise ValueError(f"robot cell {cell.id} references unknown source segment: {cell.source_segment_id}")
+            source_segment = next(segment for segment in self.conveyor_segments if segment.id == cell.source_segment_id)
+            if cell.pick_distance < 0 or cell.pick_distance > source_segment.length:
+                raise ValueError(f"robot cell {cell.id} pick_distance must stay within source segment length")
+            if cell.place_drop_zone_id not in drop_zone_ids:
+                raise ValueError(f"robot cell {cell.id} references unknown drop zone: {cell.place_drop_zone_id}")
+            if cell.place_segment_id is not None:
+                if cell.place_segment_id not in segment_ids:
+                    raise ValueError(f"robot cell {cell.id} references unknown placement segment: {cell.place_segment_id}")
+                place_segment = next(segment for segment in self.conveyor_segments if segment.id == cell.place_segment_id)
+                if cell.place_distance < 0 or cell.place_distance > place_segment.length:
+                    raise ValueError(
+                        f"robot cell {cell.id} place_distance must stay within placement segment length"
+                    )
+            if not cell.target_commodities:
+                raise ValueError(f"robot cell {cell.id} must target at least one commodity")
+            unknown_commodities = [
+                commodity for commodity in cell.target_commodities if commodity not in self.system.commodity_end_markets
+            ]
+            if unknown_commodities:
+                raise ValueError(f"robot cell {cell.id} references unknown target commodities: {unknown_commodities}")
+            if cell.perception_zone_id is not None:
+                if cell.perception_zone_id not in perception_zone_ids:
+                    raise ValueError(f"robot cell {cell.id} references unknown perception zone: {cell.perception_zone_id}")
+                zone = next(zone for zone in self.perception_zones if zone.id == cell.perception_zone_id)
+                if zone.segment_id == cell.source_segment_id and cell.pick_distance <= zone.distance_range[1]:
+                    raise ValueError(
+                        f"robot cell {cell.id} pick_distance must be downstream of linked perception zone {zone.id}"
+                    )
+            if not cell.controller:
+                raise ValueError(f"robot cell {cell.id} controller must not be empty")
+            if cell.pick_duration <= 0 or cell.place_duration <= 0 or cell.cooldown < 0:
+                raise ValueError(f"robot cell {cell.id} timing values must be positive")
 
         platform_ids = {platform.id for platform in self.platforms}
         if len(platform_ids) != len(self.platforms):
@@ -820,6 +995,10 @@ class SimulationConfig:
         return self.mrf.machine_zones
 
     @property
+    def robot_cells(self) -> tuple[RobotCellConfig, ...]:
+        return self.mrf.robot_cells
+
+    @property
     def platforms(self) -> tuple[PlatformConfig, ...]:
         return self.mrf.platforms
 
@@ -830,6 +1009,10 @@ class SimulationConfig:
     @property
     def drop_zones(self) -> tuple[DropZoneConfig, ...]:
         return self.mrf.drop_zones
+
+    @property
+    def perception_zones(self) -> tuple[PerceptionZoneConfig, ...]:
+        return self.mrf.perception_zones
 
     @property
     def spawn_segment_id(self) -> str | None:
@@ -891,7 +1074,14 @@ class SimulationConfig:
 
     @property
     def supported_layout_presets(self) -> set[str]:
-        return {"full_mrf", "edco_conveyor_segment_a", "dense_mrf_process_line", "recycling_facility_large_v2"}
+        return {
+            "full_mrf",
+            "edco_conveyor_segment_a",
+            "dense_mrf_process_line",
+            "recycling_facility_large_v2",
+            "recycling_facility_large_v3",
+            "sims_big_sort_video_v2",
+        }
 
     @property
     def supported_facility_types(self) -> set[str]:
@@ -904,6 +1094,14 @@ class SimulationConfig:
             "cdi_processing",
             "end_market",
         }
+
+    @property
+    def supported_perception_sensor_types(self) -> set[str]:
+        return {"rgb_camera"}
+
+    @property
+    def supported_robot_types(self) -> set[str]:
+        return {"pick_arm", "xarm6"}
 
     @property
     def capture_station_types(self) -> set[str]:
